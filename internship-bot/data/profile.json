@@ -1,0 +1,38 @@
+{
+  "name": "Aditya Lohar",
+  "college": "KBS's COET (NMKC), Jalgaon — DBATU",
+  "degree": "B.Tech Computer Engineering",
+  "year": "3rd year (2027 graduation)",
+  "skills": [
+    "React",
+    "Next.js",
+    "Flutter",
+    "Node.js",
+    "Express",
+    "MongoDB",
+    "Firebase",
+    "Python",
+    "MySQL",
+    "REST API",
+    "Riverpod",
+    "Gemini API",
+    "Claude API"
+  ],
+  "github": "https://github.com/Adityaloharr0030",
+  "linkedin": "https://linkedin.com/in/aditya-lohar",
+  "location": "Jalgaon, Maharashtra",
+  "email": "your_email@gmail.com",
+  "resume_path": "./data/resume.pdf",
+  "keywords": [
+    "Full Stack",
+    "Flutter",
+    "React",
+    "Node.js",
+    "Frontend",
+    "Backend",
+    "MERN",
+    "Mobile Developer"
+  ],
+  "preferred_mode": ["Remote", "Hybrid"],
+  "avoid_companies": []
+}

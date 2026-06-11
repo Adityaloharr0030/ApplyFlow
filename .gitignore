@@ -1,0 +1,36 @@
+# ─── Environment & Secrets ───
+.env
+data/google_creds.json
+data/resume.pdf
+
+# ─── Python ───
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ─── Logs & Screenshots ───
+logs/
+*.log
+
+# ─── Virtual Environment ───
+venv/
+.venv/
+env/
+ENV/
+
+# ─── IDE ───
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ─── OS ───
+.DS_Store
+Thumbs.db
+desktop.ini

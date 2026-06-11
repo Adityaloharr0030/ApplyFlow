@@ -1,0 +1,33 @@
+# ============================================================
+# Internship Automation Bot — Dependencies
+# Compatible with Python 3.11+
+# Install: pip install -r requirements.txt
+# ============================================================
+
+# --- Web Scraping ---
+requests==2.31.0
+beautifulsoup4==4.12.3
+
+# --- Browser Automation ---
+selenium==4.21.0
+undetected-chromedriver==3.5.5
+
+# --- AI (Google Gemini — FREE tier) ---
+google-generativeai==0.8.3
+
+# --- Google Sheets Logging ---
+gspread==6.1.2
+google-auth==2.29.0
+google-auth-oauthlib==1.2.0
+
+# --- Telegram Notifications ---
+python-telegram-bot==21.3
+
+# --- Email ---
+# (smtplib and email are stdlib — no pip install needed)
+
+# --- Scheduling ---
+schedule==1.2.2
+
+# --- Environment Variables ---
+python-dotenv==1.0.1
