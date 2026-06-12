@@ -22,35 +22,8 @@ logger = logging.getLogger(__name__)
 # Directory for failure screenshots
 SCREENSHOT_DIR = Path("./logs/screenshots")
 
-
 def _ensure_screenshot_dir():
-    """Create the screenshots directory if it doesn't exist."""
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _create_driver():
-    """
-    Create an undetected Chrome WebDriver instance.
-    Returns None if Chrome/chromedriver aren't available.
-    """
-    try:
-        import undetected_chromedriver as uc
-
-        options = uc.ChromeOptions()
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--window-size=1920,1080")
-        # Comment out headless for debugging:
-        # options.add_argument("--headless=new")
-
-        driver = uc.Chrome(options=options, use_subprocess=True)
-        driver.implicitly_wait(10)
-        return driver
-    except Exception as e:
-        logger.error(f"[SeleniumFill] Failed to create Chrome driver: {e}")
-        return None
-
 
 def _take_screenshot(driver, label: str):
     """Save a screenshot with timestamp for debugging."""
@@ -64,36 +37,77 @@ def _take_screenshot(driver, label: str):
         logger.debug(f"Failed to save screenshot: {e}")
 
 
-def _login_internshala(driver) -> bool:
+def _ensure_screenshot_dir():
+    """Create the screenshots directory if it doesn't exist."""
+    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def create_driver():
     """
-    Log into Internshala using credentials from .env.
+    Create an undetected Chrome WebDriver instance with a persistent profile.
+    Returns None if Chrome/chromedriver aren't available.
+    """
+    try:
+        import undetected_chromedriver as uc
+        from pathlib import Path
+
+        profile_dir = Path("./logs/chrome_profile").absolute()
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        options = uc.ChromeOptions()
+        options.add_argument(f"--user-data-dir={profile_dir}")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--window-size=1920,1080")
+        # options.add_argument("--headless=new") # Headless breaks many CAPTCHAs
+
+        driver = uc.Chrome(options=options, use_subprocess=True)
+        driver.implicitly_wait(10)
+        return driver
+    except Exception as e:
+        logger.error(f"[SeleniumFill] Failed to create Chrome driver: {e}")
+        return None
+
+
+def login_internshala(driver) -> bool:
+    """
+    Log into Internshala. Checks if already logged in first.
     Returns True on success.
     """
-    email = os.getenv("INTERNSHALA_EMAIL", "")
-    password = os.getenv("INTERNSHALA_PASSWORD", "")
-
-    if not email or not password:
-        logger.warning("[SeleniumFill] ✗ Internshala credentials not set in .env")
-        return False
-
     try:
-        logger.info("[SeleniumFill] Logging into Internshala…")
+        logger.info("[Internshala] Checking login status...")
+        driver.get("https://internshala.com/")
+        time.sleep(random.uniform(2.0, 4.0))
+
+        # If "Login" button is not present, we are likely already logged in
+        page_source = driver.page_source.lower()
+        if "logout" in page_source or "my applications" in page_source or "aditya" in page_source:
+            logger.info("[Internshala] ✓ Already logged in (using saved session)")
+            return True
+
+        # Need to log in
+        email = os.getenv("INTERNSHALA_EMAIL", "")
+        password = os.getenv("INTERNSHALA_PASSWORD", "")
+
+        if not email or not password:
+            logger.warning("[Internshala] ✗ Credentials not set in .env")
+            return False
+
+        logger.info("[Internshala] Logging in…")
         driver.get("https://internshala.com/login")
         time.sleep(random.uniform(2.0, 3.5))
 
-        # Fill email
         email_field = driver.find_element("id", "email")
         email_field.clear()
         email_field.send_keys(email)
         time.sleep(random.uniform(0.3, 0.8))
 
-        # Fill password
         pass_field = driver.find_element("id", "password")
         pass_field.clear()
         pass_field.send_keys(password)
         time.sleep(random.uniform(0.3, 0.8))
 
-        # Click login button
         login_btn = driver.find_element(
             "css selector",
             "button#login_submit, button[type='submit']"
@@ -101,62 +115,46 @@ def _login_internshala(driver) -> bool:
         login_btn.click()
         time.sleep(random.uniform(3.0, 5.0))
 
-        # Verify login succeeded
-        current_url = driver.current_url
-        if "login" not in current_url.lower():
-            logger.info("[SeleniumFill] ✓ Internshala login successful")
-            return True
-
         # Check for CAPTCHA
         page_source = driver.page_source.lower()
         if "captcha" in page_source or "recaptcha" in page_source:
-            logger.warning("[SeleniumFill] ✗ CAPTCHA detected — cannot auto-login")
+            logger.warning("[Internshala] ⚠️ CAPTCHA detected! Pausing for 60 seconds so you can solve it manually in the Chrome window...")
             _take_screenshot(driver, "captcha_detected")
-            return False
+            time.sleep(60)
+            
+            if "login" not in driver.current_url.lower():
+                logger.info("[Internshala] ✓ Manual CAPTCHA solve successful!")
+                return True
+            else:
+                logger.warning("[Internshala] ✗ CAPTCHA not solved in time.")
+                return False
 
-        logger.warning("[SeleniumFill] ✗ Login might have failed — still on login page")
+        current_url = driver.current_url
+        if "login" not in current_url.lower():
+            logger.info("[Internshala] ✓ Login successful")
+            return True
+
+        logger.warning("[Internshala] ✗ Login might have failed — still on login page")
         _take_screenshot(driver, "login_uncertain")
         return False
 
     except Exception as e:
-        logger.error(f"[SeleniumFill] Login error: {e}")
+        logger.error(f"[Internshala] Login error: {e}")
         _take_screenshot(driver, "login_error")
         return False
 
 
-def apply_internshala(listing: dict, cover_note: str, profile: dict) -> dict:
+def apply_internshala(driver, listing: dict, cover_note: str, profile: dict) -> dict:
     """
-    Auto-fill and submit an Internshala application.
-
-    Args:
-        listing:    Listing dict with 'apply_url' key.
-        cover_note: The AI-generated cover note text.
-        profile:    Candidate profile dict.
-
-    Returns:
-        Dict: { success: bool, message: str }
+    Auto-fill and submit an Internshala application using a pre-existing driver.
     """
-    driver = None
-
     try:
-        # Only process Internshala listings
         if listing.get("source") != "internshala":
-            return {
-                "success": False,
-                "message": f"Not an Internshala listing (source: {listing.get('source')})",
-            }
+            return {"success": False, "message": "Not an Internshala listing"}
 
-        driver = _create_driver()
-        if not driver:
-            return {"success": False, "message": "Could not create Chrome driver"}
-
-        # Step 1: Login
-        if not _login_internshala(driver):
-            return {"success": False, "message": "Internshala login failed"}
-
-        # Step 2: Navigate to the internship page
+        # Navigate to the internship page
         apply_url = listing.get("apply_url", "")
-        logger.info(f"[SeleniumFill] Navigating to: {apply_url}")
+        logger.info(f"[Internshala] Navigating to: {apply_url}")
         driver.get(apply_url)
         time.sleep(random.uniform(2.0, 4.0))
 
@@ -285,12 +283,11 @@ def apply_internshala(listing: dict, cover_note: str, profile: dict) -> dict:
             or "thank you" in page_source
         ):
             logger.info(
-                f"[SeleniumFill] ✅ Successfully applied to "
+                f"[Internshala] ✅ Successfully applied to "
                 f"{listing.get('title')} at {listing.get('company')}"
             )
             return {"success": True, "message": "Application submitted successfully"}
 
-        # We clicked submit but can't confirm success
         _take_screenshot(driver, "submit_uncertain")
         return {
             "success": True,
@@ -298,14 +295,6 @@ def apply_internshala(listing: dict, cover_note: str, profile: dict) -> dict:
         }
 
     except Exception as e:
-        logger.error(f"[SeleniumFill] ✗ Error during application: {e}")
-        if driver:
-            _take_screenshot(driver, "application_error")
+        logger.error(f"[Internshala] ✗ Error during application: {e}")
+        _take_screenshot(driver, "application_error")
         return {"success": False, "message": f"Error: {str(e)}"}
-
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
