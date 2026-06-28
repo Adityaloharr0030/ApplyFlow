@@ -13,6 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 from typing import Any
 from .base import Platform
+from agent.form_filler import answer_question
 
 logger = logging.getLogger(__name__)
 
@@ -209,10 +210,20 @@ class InternshalaPlatform(Platform):
             if "404" in driver.title.lower() or "not found" in driver.page_source.lower():
                 return {"success": False, "message": "Listing page not found (404)"}
 
-            # If we get a CAPTCHA or blocked page
             if "captcha" in driver.page_source.lower() or "unusual activity" in driver.page_source.lower():
-                self.record_captcha()
-                return {"success": False, "message": "Blocked by CAPTCHA"}
+                if os.getenv("HEADLESS", "true").lower() == "false":
+                    logger.warning("  ⚠️ Captcha detected! You have 60 seconds to solve it manually in the browser...")
+                    for _ in range(20):
+                        time.sleep(3)
+                        if "captcha" not in driver.page_source.lower() and "unusual activity" not in driver.page_source.lower():
+                            logger.info("  ✓ Captcha solved! Continuing...")
+                            break
+                    else:
+                        self.record_captcha()
+                        return {"success": False, "message": "Blocked by CAPTCHA (Timed out waiting for manual solve)"}
+                else:
+                    self.record_captcha()
+                    return {"success": False, "message": "Blocked by CAPTCHA"}
 
             apply_clicked = False
             apply_selectors = [
@@ -281,8 +292,20 @@ class InternshalaPlatform(Platform):
                 extra_textareas = driver.find_elements("css selector", "textarea:not([id='cover_letter'])")
                 for ta in extra_textareas:
                     if ta.is_displayed() and not ta.get_attribute("value"):
-                        ta.send_keys("Yes, I am available to start immediately.")
-            except Exception:
+                        question_text = ""
+                        try:
+                            # Try to find the question label associated with this textarea
+                            question_elem = ta.find_element("xpath", "./preceding::label[1] | ./preceding::div[contains(@class, 'question')][1]")
+                            question_text = question_elem.text.strip()
+                        except Exception:
+                            question_text = "Are you available and qualified for this role?"
+                            
+                        logger.info(f"  [Internshala] Found extra question: {question_text[:50]}...")
+                        smart_answer = answer_question(question_text, profile)
+                        ta.send_keys(smart_answer)
+                        time.sleep(random.uniform(1.0, 2.0))
+            except Exception as e:
+                logger.debug(f"  [Internshala] Error filling extra textareas: {e}")
                 pass
 
             submit_clicked = False

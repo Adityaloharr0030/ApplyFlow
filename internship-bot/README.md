@@ -84,6 +84,11 @@ python main.py --run-now
 
 > ⚠️ **Security note**: Public ntfy.sh topics are not access-controlled. Anyone who guesses the exact topic string can read your notifications. Use a long random string, not something guessable like "applyflow".
 
+### WhatsApp (via CallMeBot)
+1. Send a WhatsApp message to the CallMeBot number to get your API key. See: [CallMeBot Free API](https://www.callmebot.com/blog/free-api-whatsapp-messages/)
+2. Set `WHATSAPP_PHONE` and `WHATSAPP_API_KEY` in `.env`
+3. *Note*: This is an unofficial 3rd-party service, so the bot number occasionally resets. Ntfy is recommended as the primary mobile notification channel.
+
 **Notification types:**
 - `✅ Applied — {title} @ {company} via {platform}` — instant, per-application
 - `📧 Cold email sent — {company}` — instant
@@ -115,7 +120,8 @@ agent/
 
 notifier/
   telegram.py         # Instant + digest notifications
-  ntfy.py             # ntfy.sh instant notifications
+  push.py             # ntfy.sh instant + digest notifications
+  whatsapp.py         # CallMeBot WhatsApp notifications
 
 utils/
   browser.py          # Shared Chrome driver management

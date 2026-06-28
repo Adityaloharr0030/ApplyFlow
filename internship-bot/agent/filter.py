@@ -108,7 +108,7 @@ def _score_with_keywords(listing: dict, profile: dict) -> dict:
     # Clamp score
     score = max(1, min(10, score))
     reason = "; ".join(reasons) if reasons else "General listing"
-    apply_decision = score >= 5  # Lowered from 6 to 5 — many good listings get 5
+    apply_decision = score >= 4  # Lowered to 4 to be more lenient when AI is unavailable
 
     return {"score": score, "reason": reason, "apply": apply_decision}
 
@@ -119,7 +119,7 @@ def _score_with_ai(listing: dict, profile: dict, client) -> dict | None:
     """
     global _gemini_disabled
 
-    MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+    MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
     prompt = f"""You are a career advisor. Score this internship/job match 1-10.
 
 LISTING: {listing.get('title', 'N/A')} at {listing.get('company', 'N/A')} ({listing.get('location', 'N/A')})

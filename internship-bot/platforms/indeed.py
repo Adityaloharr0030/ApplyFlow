@@ -75,8 +75,19 @@ class IndeedPlatform(Platform):
             time.sleep(random.uniform(3.0, 5.0))
 
             if "captcha" in driver.page_source.lower() or "cloudflare" in driver.title.lower():
-                self.record_captcha()
-                return {"success": False, "message": "Hit CAPTCHA / Cloudflare wall"}
+                if os.getenv("HEADLESS", "true").lower() == "false":
+                    logger.warning("  ⚠️ Captcha detected! You have 30 seconds to solve it manually in the browser...")
+                    for _ in range(10):
+                        time.sleep(3)
+                        if "captcha" not in driver.page_source.lower() and "cloudflare" not in driver.title.lower():
+                            logger.info("  ✓ Captcha solved! Continuing...")
+                            break
+                    else:
+                        self.record_captcha()
+                        return {"success": False, "message": "Hit CAPTCHA / Cloudflare wall (Timeout)"}
+                else:
+                    self.record_captcha()
+                    return {"success": False, "message": "Hit CAPTCHA / Cloudflare wall"}
 
             # Check if it's "Indeed Apply" vs external redirect
             try:

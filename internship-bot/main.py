@@ -29,8 +29,9 @@ from platforms.generic_web import GenericWebPlatform
 from agent.filter import filter_listings
 from agent.cover_note import generate_cover_note
 from tracker.sheets import log_application, get_applied_urls
-from notifier.telegram import send_summary, send_instant as telegram_instant
-from notifier.ntfy import send_instant as ntfy_instant
+from notifier.telegram import send_summary as telegram_summary, send_instant as telegram_instant
+from notifier.push import send_summary as ntfy_summary, send_instant as ntfy_instant
+from notifier.whatsapp import send_summary as whatsapp_summary, send_instant as whatsapp_instant
 from utils.dedup import deduplicate
 from utils.browser import create_driver
 
@@ -144,6 +145,30 @@ def fire_instant_notification(platform_name: str, listing: dict, is_error: bool 
         ntfy_instant(msg, tags=tags)
     except Exception as e:
         logging.getLogger("main").warning(f"Ntfy instant failed: {e}")
+
+    try:
+        whatsapp_instant(msg)
+    except Exception as e:
+        logging.getLogger("main").warning(f"WhatsApp instant failed: {e}")
+
+def send_summary(applied: list, skipped: int, errors: int, manual: list = None):
+    logger = logging.getLogger("main")
+    if manual is None:
+        manual = []
+    try:
+        telegram_summary(applied, skipped, errors, manual)
+    except Exception as e:
+        logger.error(f"  ✗ Telegram notification failed: {e}")
+        
+    try:
+        ntfy_summary(applied, skipped, errors, manual)
+    except Exception as e:
+        logger.error(f"  ✗ Ntfy notification failed: {e}")
+
+    try:
+        whatsapp_summary(applied, skipped, errors, manual)
+    except Exception as e:
+        logger.error(f"  ✗ WhatsApp notification failed: {e}")
 
 def run_pipeline():
     logger = logging.getLogger("main")
@@ -333,12 +358,9 @@ def run_pipeline():
 
     # 6. SUMMARY
     logger.info("\n" + "━" * 50)
-    logger.info("📱 STEP 6: Sending Telegram summary…")
+    logger.info("📱 STEP 6: Sending summary notifications…")
     logger.info("━" * 50)
-    try:
-        send_summary(applied_listings, skipped_count, error_count, manual_listings)
-    except Exception as e:
-        logger.error(f"  ✗ Telegram notification failed: {e}")
+    send_summary(applied_listings, skipped_count, error_count, manual_listings)
 
     logger.info("\n" + "=" * 60)
     logger.info("🏁 PIPELINE COMPLETE")
@@ -352,7 +374,34 @@ def main():
     parser.add_argument("--run-now", action="store_true")
     parser.add_argument("--time", type=str, default=SCHEDULE_TIME)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--test-notify", action="store_true", help="Send a test notification to all channels")
     args = parser.parse_args()
+
+    if args.test_notify:
+        logger = setup_logging()
+        logger.info("🧪 Testing notifications...")
+        dummy_applied = [{"company": "Test Company", "title": "Test Role"}]
+        
+        logger.info("-> Testing Telegram...")
+        try:
+            telegram_summary(dummy_applied, 0, 0)
+        except Exception as e:
+            logger.error(f"Telegram failed: {e}")
+            
+        logger.info("-> Testing Ntfy...")
+        try:
+            ntfy_summary(dummy_applied, 0, 0)
+        except Exception as e:
+            logger.error(f"Ntfy failed: {e}")
+            
+        logger.info("-> Testing WhatsApp...")
+        try:
+            whatsapp_summary(dummy_applied, 0, 0)
+        except Exception as e:
+            logger.error(f"WhatsApp failed: {e}")
+            
+        logger.info("Test complete.")
+        sys.exit(0)
 
     if args.dry_run:
         os.environ["DRY_RUN"] = "true"

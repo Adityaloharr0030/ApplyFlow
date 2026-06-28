@@ -17,15 +17,13 @@ def create_driver():
     try:
         import undetected_chromedriver as uc
         
-        logger.info("[Browser] Force-closing existing Chrome processes...")
-        os.system("taskkill /F /IM chrome.exe /T >nul 2>&1")
-        time.sleep(2)
+        logger.info("[Browser] Launching Chrome with user profile...")
+        # Removed taskkill as it terminates the user's active browser!
         
         options = uc.ChromeOptions()
-        user_data_dir = r"C:\Users\ADITYA\AppData\Local\Google\Chrome\User Data"
-        if os.path.exists(user_data_dir):
-            options.add_argument(f"--user-data-dir={user_data_dir}")
-            options.add_argument("--profile-directory=Default")
+        user_data_dir = r"C:\ApplyFlow\bot_chrome_profile"
+        options.add_argument(f"--user-data-dir={user_data_dir}")
+        options.add_argument("--profile-directory=Default")
             
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -35,7 +33,7 @@ def create_driver():
             options.add_argument("--headless=new")
             
         logger.info("[Browser] Launching Chrome...")
-        driver = uc.Chrome(options=options, use_subprocess=True)
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=149)
         driver.implicitly_wait(10)
         return driver
     except Exception as e:

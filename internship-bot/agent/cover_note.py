@@ -50,7 +50,7 @@ def generate_cover_note(listing: dict, profile: dict) -> str:
 
     client = _get_client()
     if client:
-        MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+        MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
         prompt = f"""Write a short, professional cover letter for the following internship.
 
 INTERNSHIP: {title} at {company}
