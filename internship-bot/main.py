@@ -119,8 +119,20 @@ def fire_instant_notification(platform_name: str, listing: dict, is_error: bool 
     else:
         title = listing.get('title', 'Role')
         company = listing.get('company', 'Company')
+        location = listing.get('location', 'Not specified')
+        score = listing.get('score', '?')
+        reason = listing.get('reason', 'N/A')
         url = listing.get('apply_url', '')
-        msg = f"✅ Applied — {title} @ {company} via {platform_name.capitalize()}\nURL: {url}"
+        
+        msg = (
+            f"✅ APPLIED: {title}\n"
+            f"🏢 Company: {company}\n"
+            f"📍 Location: {location}\n"
+            f"🌐 Platform: {platform_name.capitalize()}\n"
+            f"🎯 AI Score: {score}/10\n"
+            f"💡 Why: {reason}\n"
+            f"🔗 Link: {url}"
+        )
         tags = "rocket"
 
     try:
@@ -251,6 +263,11 @@ def run_pipeline():
     logger.info("━" * 50)
 
     driver = create_driver()
+    if driver is None:
+        logger.error("  ✗ CRITICAL ERROR: Failed to launch Chrome browser. Aborting apply phase.")
+        logger.error("  💡 Tip: Make sure Chrome is installed and fully closed before running.")
+        send_summary(applied_listings, skipped_count, error_count, manual_listings)
+        return
     
     try:
         for source_name, listings in grouped.items():
