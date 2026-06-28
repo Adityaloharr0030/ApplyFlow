@@ -48,21 +48,21 @@ def _get_client():
 def _score_with_keywords(listing: dict, profile: dict) -> dict:
     """
     Score a listing locally using keyword matching (no API needed).
-    Scores based on:
-      - Skill overlap with title (high weight)
-      - Keyword match (medium weight)
-      - Location/remote preference match (low weight)
+    Checks title, company, location, AND description for matches.
     """
     title = listing.get("title", "").lower()
     company = listing.get("company", "").lower()
     location = listing.get("location", "").lower()
+    description = listing.get("description", "").lower()
+    # Combine all searchable text
+    full_text = f"{title} {company} {description}"
 
     score = 3  # Base score
     reasons = []
 
-    # --- Skill matching (strongest signal) ---
+    # --- Skill matching (strongest signal) — check title + description ---
     skills = [s.lower() for s in profile.get("skills", [])]
-    skill_matches = [s for s in skills if s in title or s in company]
+    skill_matches = [s for s in skills if s in title or s in description]
     if len(skill_matches) >= 3:
         score += 4
         reasons.append(f"Strong skill match: {', '.join(skill_matches[:3])}")
@@ -73,23 +73,31 @@ def _score_with_keywords(listing: dict, profile: dict) -> dict:
         score += 2
         reasons.append(f"Skill match: {skill_matches[0]}")
 
-    # --- Keyword matching ---
+    # --- Keyword matching — check title + description ---
     keywords = [k.lower() for k in profile.get("keywords", [])]
-    keyword_matches = [k for k in keywords if k in title]
-    if keyword_matches:
+    keyword_matches = [k for k in keywords if k in title or k in description]
+    if len(keyword_matches) >= 2:
+        score += 2
+        reasons.append(f"Keywords: {', '.join(keyword_matches[:2])}")
+    elif keyword_matches:
         score += 1
         reasons.append(f"Keyword: {keyword_matches[0]}")
 
     # --- Location / Remote preference ---
-    preferred_modes = [m.lower() for m in profile.get("preferred_mode", [])]
-    if "remote" in preferred_modes and ("remote" in location or "work from home" in location):
-        score += 1
-        reasons.append("Remote friendly")
+    location_prefs = [m.lower() for m in profile.get("location_preferences", [])]
+    for pref in location_prefs:
+        if pref in location:
+            score += 1
+            reasons.append(f"Location: {pref}")
+            break
 
-    candidate_location = profile.get("location", "").lower()
-    if candidate_location and candidate_location.split(",")[0] in location:
-        score += 1
-        reasons.append("Location match")
+    # --- Exclude keywords (negative signals) ---
+    exclude = [c.lower() for c in profile.get("exclude_keywords", [])]
+    for excl in exclude:
+        if excl in title:
+            score = max(1, score - 3)
+            reasons = [f"Excluded keyword in title: {excl}"]
+            break
 
     # --- Negative signals ---
     avoid = [c.lower() for c in profile.get("avoid_companies", [])]
@@ -99,8 +107,8 @@ def _score_with_keywords(listing: dict, profile: dict) -> dict:
 
     # Clamp score
     score = max(1, min(10, score))
-    reason = "; ".join(reasons) if reasons else "General internship listing"
-    apply_decision = score >= 6
+    reason = "; ".join(reasons) if reasons else "General listing"
+    apply_decision = score >= 5  # Lowered from 6 to 5 — many good listings get 5
 
     return {"score": score, "reason": reason, "apply": apply_decision}
 
@@ -112,12 +120,12 @@ def _score_with_ai(listing: dict, profile: dict, client) -> dict | None:
     global _gemini_disabled
 
     MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-    prompt = f"""You are a career advisor. Score this internship match 1-10.
+    prompt = f"""You are a career advisor. Score this internship/job match 1-10.
 
-INTERNSHIP: {listing.get('title', 'N/A')} at {listing.get('company', 'N/A')} ({listing.get('location', 'N/A')})
+LISTING: {listing.get('title', 'N/A')} at {listing.get('company', 'N/A')} ({listing.get('location', 'N/A')})
 CANDIDATE SKILLS: {', '.join(profile.get('skills', []))}
 CANDIDATE KEYWORDS: {', '.join(profile.get('keywords', []))}
-PREFERRED: {', '.join(profile.get('preferred_mode', []))}
+LOCATION PREFERENCES: {', '.join(profile.get('location_preferences', []))}
 
 Respond ONLY with JSON: {{"score": <1-10>, "reason": "<short reason>", "apply": <true/false>}}"""
 
@@ -141,7 +149,7 @@ Respond ONLY with JSON: {{"score": <1-10>, "reason": "<short reason>", "apply": 
             return {
                 "score": score,
                 "reason": str(result.get("reason", "AI scored")),
-                "apply": score >= 6,
+                "apply": score >= 5,
             }
 
         except Exception as e:
@@ -152,7 +160,6 @@ Respond ONLY with JSON: {{"score": <1-10>, "reason": "<short reason>", "apply": 
                     logger.info(f"  [Retry {attempt}/{MAX_RETRIES}] Rate limited, waiting {wait}s...")
                     time.sleep(wait)
                 else:
-                    # Quota exhausted -- disable Gemini for the rest of this run
                     logger.warning(
                         "[Filter] Gemini quota exhausted -- switching to local keyword scoring"
                     )
@@ -200,7 +207,7 @@ def score_listing(listing: dict, profile: dict) -> dict:
 
 def filter_listings(listings: list[dict], profile: dict) -> list[dict]:
     """
-    Score all listings and return only those worth applying to (score >= 6).
+    Score all listings and return only those worth applying to (score >= 5).
     Uses AI if available, otherwise falls back to local keyword matching.
     """
     client = _get_client()

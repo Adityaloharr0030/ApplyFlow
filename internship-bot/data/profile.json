@@ -53,5 +53,13 @@
     "jalgaon",
     "maharashtra"
   ],
-  "min_stipend": 0
+  "min_stipend": 0,
+  "job_types": ["internship", "full-time", "contract"],
+  "countries": ["India"],
+  "target_companies": [
+    "google.com",
+    "amazon.jobs",
+    "microsoft.com"
+  ],
+  "resume_path": "./data/resume.pdf"
 }

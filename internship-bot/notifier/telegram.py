@@ -41,6 +41,15 @@ def _send_message_requests(bot_token: str, chat_id: str, text: str) -> bool:
         logger.warning(f"[Telegram] ✗ HTTP request failed: {e}")
         return False
 
+def send_instant(message: str):
+    """
+    Send an instant real-time notification to Telegram.
+    """
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not bot_token or not chat_id or bot_token == "your_bot_token_here" or chat_id == "your_chat_id_here":
+        return
+    _send_message_requests(bot_token, chat_id, message)
 
 def send_summary(applied: list[dict], skipped: int, errors: int, manual: list[dict] = None):
     """

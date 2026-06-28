@@ -8,6 +8,7 @@
 # --- Web Scraping ---
 requests>=2.31.0
 beautifulsoup4>=4.12.3
+python-jobspy>=1.1.0
 
 # --- Browser Automation ---
 selenium>=4.21.0

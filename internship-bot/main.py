@@ -2,21 +2,8 @@
 """
 main.py — Internship Automation Bot
 ═══════════════════════════════════════════════════════════════
-The main orchestrator that ties everything together:
-  1. Scrapes internship listings from Internshala, LinkedIn, LetsInternship
-  2. Deduplicates results across all sources
-  3. Filters out already-applied listings
-  4. Scores each listing with Claude AI
-  5. Generates personalized cover notes for approved listings
-  6. Auto-applies via Selenium (Internshala) or sends cold emails
-  7. Logs everything to Google Sheets (with CSV fallback)
-  8. Sends a Telegram summary
-
-Usage:
-  python main.py --run-now     Run the pipeline immediately (one shot)
-  python main.py               Start the daily scheduler (runs at 9:00 AM)
-
-Author: Aditya Lohar
+Orchestrator for the ApplyFlow bot.
+Supports: Internshala, LinkedIn, Indeed, Unstop, and Cold Email.
 """
 
 import argparse
@@ -26,42 +13,37 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from collections import defaultdict
 
-# ─── Load environment variables FIRST (before any other imports use them) ───
+# ─── Load environment variables FIRST ───
 from dotenv import load_dotenv
-
 load_dotenv()
 
 # ─── Project imports ───
-from scraper.internshala import scrape_internshala
-from scraper.linkedin import scrape_linkedin
-from scraper.letsinternship import scrape_letsinternship
+from platforms.internshala import InternshalaPlatform
+from platforms.linkedin import LinkedInPlatform
+from platforms.indeed import IndeedPlatform
+from platforms.unstop import UnstopPlatform
+from platforms.generic_web import GenericWebPlatform
+
 from agent.filter import filter_listings
 from agent.cover_note import generate_cover_note
-from applicator.selenium_fill import apply_internshala, create_driver
-from applicator.linkedin_fill import apply_linkedin
-from applicator.letsintern_fill import apply_letsinternship
-from applicator.email_send import send_cold_email
-from tracker.sheets import log_application, already_applied, get_applied_urls
-from notifier.telegram import send_summary
+from tracker.sheets import log_application, get_applied_urls
+from notifier.telegram import send_summary, send_instant as telegram_instant
+from notifier.ntfy import send_instant as ntfy_instant
 from utils.dedup import deduplicate
+from utils.browser import create_driver
 
 # ─── Constants ───
 PROFILE_PATH = Path("./data/profile.json")
 LOG_DIR = Path("./logs")
-SCHEDULE_TIME = "09:00"  # Daily run time (24h format)
-
+SCHEDULE_TIME = "09:00"
 
 def setup_logging() -> logging.Logger:
-    """
-    Configure logging to both console and a daily log file.
-    Log file: ./logs/run_YYYY-MM-DD.log
-    """
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     today = datetime.now().strftime("%Y-%m-%d")
     log_file = LOG_DIR / f"run_{today}.log"
 
-    # Create formatters
     file_formatter = logging.Formatter(
         "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -71,19 +53,16 @@ def setup_logging() -> logging.Logger:
         datefmt="%H:%M:%S",
     )
 
-    # File handler (detailed, UTF-8)
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(file_formatter)
 
-    # Console handler — force UTF-8 to avoid Windows cp1252 crashes with emoji
     import io
     utf8_stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     console_handler = logging.StreamHandler(utf8_stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(console_formatter)
 
-    # Root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
     root_logger.addHandler(file_handler)
@@ -93,33 +72,34 @@ def setup_logging() -> logging.Logger:
     logger.info(f"Logging to: {log_file}")
     return logger
 
-
 def load_profile() -> dict:
-    """
-    Load the candidate profile from data/profile.json.
-    Exits if the file is missing.
-    """
     if not PROFILE_PATH.exists():
         print(f"❌ Profile not found: {PROFILE_PATH}")
-        print("   Please create data/profile.json with your details.")
         sys.exit(1)
 
     with open(PROFILE_PATH, "r", encoding="utf-8") as f:
         profile = json.load(f)
 
-    # After loading profile, warn about placeholders:
-    logger = logging.getLogger("main")
-    placeholders = {
-        "email": "your_email@gmail.com",
-        "github": "https://github.com/yourusername",
-    }
-    for field, placeholder in placeholders.items():
-        if profile.get(field) == placeholder:
-            logger.warning(f"⚠️  profile.json: '{field}' still has placeholder value — update it!")
+    # Validate resume_path exists
+    resume_path = profile.get("resume_path", "")
+    if resume_path:
+        rp = Path(resume_path)
+        if not rp.exists():
+            logging.getLogger("main").warning(
+                f"⚠️  resume_path '{resume_path}' does not exist! "
+                "Applications that require a resume upload will fail."
+            )
+    else:
+        logging.getLogger("main").warning(
+            "⚠️  No resume_path set in profile.json — resume uploads will fail."
+        )
 
     return profile
 
 def validate_env(logger) -> None:
+    dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
+    logger.info(f"🔒 DRY_RUN mode: {'ON — no real submissions' if dry_run else 'OFF — LIVE MODE'}")
+
     checks = [
         ("GEMINI_API_KEY", "your_gemini_key_here", "AI scoring disabled — using local keyword matching"),
         ("INTERNSHALA_EMAIL", None, "Internshala auto-apply disabled"),
@@ -132,128 +112,119 @@ def validate_env(logger) -> None:
         if not val or val == placeholder:
             logger.warning(f"⚠️  {key} not configured — {msg}")
 
+def fire_instant_notification(platform_name: str, listing: dict, is_error: bool = False, error_msg: str = ""):
+    if is_error:
+        msg = f"⚠️ {platform_name.capitalize()} error: {error_msg}"
+        tags = "warning"
+    else:
+        title = listing.get('title', 'Role')
+        company = listing.get('company', 'Company')
+        url = listing.get('apply_url', '')
+        msg = f"✅ Applied — {title} @ {company} via {platform_name.capitalize()}\nURL: {url}"
+        tags = "rocket"
+
+    try:
+        telegram_instant(msg)
+    except Exception as e:
+        logging.getLogger("main").warning(f"Telegram instant failed: {e}")
+        
+    try:
+        ntfy_instant(msg, tags=tags)
+    except Exception as e:
+        logging.getLogger("main").warning(f"Ntfy instant failed: {e}")
 
 def run_pipeline():
-    """
-    Execute the full internship automation pipeline.
-    This is the core function that runs all steps in sequence.
-    """
     logger = logging.getLogger("main")
 
-    # ═══════════════════════════════════════════════════════════
-    #  SETUP
-    # ═══════════════════════════════════════════════════════════
     logger.info("=" * 60)
     logger.info("🤖 INTERNSHIP AUTOMATION BOT — Starting pipeline")
     logger.info(f"📅 Date: {datetime.now().strftime('%A, %d %B %Y at %H:%M')}")
     logger.info("=" * 60)
 
-    # Load candidate profile
     profile = load_profile()
     validate_env(logger)
     logger.info(f"👤 Candidate: {profile.get('name', 'Unknown')}")
-    logger.info(f"🎓 {profile.get('degree', 'N/A')} — {profile.get('year', 'N/A')}")
     logger.info(f"🔑 Keywords: {', '.join(profile.get('keywords', []))}")
 
-    # Tracking counters
     applied_listings: list[dict] = []
     manual_listings: list[dict] = []
     skipped_count = 0
     error_count = 0
 
-    # ═══════════════════════════════════════════════════════════
-    #  STEP 1: SCRAPE ALL SOURCES
-    # ═══════════════════════════════════════════════════════════
-    logger.info("")
-    logger.info("━" * 50)
-    logger.info("📡 STEP 1: Scraping internship listings…")
+    platforms = {
+        "internshala": InternshalaPlatform(),
+        "linkedin": LinkedInPlatform(),
+        "indeed": IndeedPlatform(),
+        "unstop": UnstopPlatform(),
+        "generic_web": GenericWebPlatform(),
+    }
+
+    # PLATFORM LIMITS
+    caps = {
+        "internshala": int(os.getenv("INTERNSHALA_MAX_APPLIES", "15")),
+        "linkedin": int(os.getenv("LINKEDIN_MAX_APPLIES", "10")),
+        "indeed": int(os.getenv("INDEED_MAX_APPLIES", "10")),
+        "unstop": int(os.getenv("UNSTOP_MAX_APPLIES", "15")),
+        "generic_web": 20
+    }
+    platform_applied_counts = {k: 0 for k in platforms.keys()}
+
+    # 1. SEARCH
+    logger.info("\n" + "━" * 50)
+    logger.info("📡 STEP 1: Scraping listings…")
     logger.info("━" * 50)
 
     all_listings: list[dict] = []
-
-    # Internshala
-    try:
-        logger.info("\n🔍 [1/3] Scraping Internshala…")
-        internshala_results = scrape_internshala(profile)
-        all_listings.extend(internshala_results)
-        logger.info(f"  → Got {len(internshala_results)} listing(s) from Internshala")
-    except Exception as e:
-        logger.error(f"  ✗ Internshala scraper crashed: {e}")
-        error_count += 1
-
-    # LinkedIn
-    try:
-        logger.info("\n🔍 [2/3] Scraping LinkedIn…")
-        linkedin_results = scrape_linkedin(profile)
-        all_listings.extend(linkedin_results)
-        logger.info(f"  → Got {len(linkedin_results)} listing(s) from LinkedIn")
-    except Exception as e:
-        logger.error(f"  ✗ LinkedIn scraper crashed: {e}")
-        error_count += 1
-
-    # LetsInternship
-    try:
-        logger.info("\n🔍 [3/3] Scraping LetsInternship…")
-        letsintern_results = scrape_letsinternship(profile)
-        all_listings.extend(letsintern_results)
-        logger.info(f"  → Got {len(letsintern_results)} listing(s) from LetsInternship")
-    except Exception as e:
-        logger.error(f"  ✗ LetsInternship scraper crashed: {e}")
-        error_count += 1
+    for name, platform in platforms.items():
+        try:
+            logger.info(f"\n🔍 Scraping {name.capitalize()}…")
+            results = platform.search(profile)
+            all_listings.extend(results)
+            logger.info(f"  → Got {len(results)} listing(s) from {name.capitalize()}")
+        except Exception as e:
+            logger.error(f"  ✗ {name.capitalize()} scraper crashed: {e}")
+            error_count += 1
 
     logger.info(f"\n📊 Total raw listings: {len(all_listings)}")
 
     if not all_listings:
-        logger.warning("⚠️ No listings found from any source — ending pipeline early")
+        logger.warning("⚠️ No listings found — ending pipeline early")
         send_summary(applied_listings, skipped_count, error_count)
         return
 
-    # ═══════════════════════════════════════════════════════════
-    #  STEP 2: DEDUPLICATE
-    # ═══════════════════════════════════════════════════════════
-    logger.info("")
-    logger.info("━" * 50)
+    # 2. DEDUPLICATE
+    logger.info("\n" + "━" * 50)
     logger.info("♻️  STEP 2: Deduplicating listings…")
     logger.info("━" * 50)
-
     unique_listings = deduplicate(all_listings)
-    dupes_removed = len(all_listings) - len(unique_listings)
-    if dupes_removed > 0:
-        logger.info(f"  Removed {dupes_removed} duplicate(s)")
+    dupes = len(all_listings) - len(unique_listings)
+    if dupes > 0:
+        logger.info(f"  Removed {dupes} duplicate(s)")
+    logger.info(f"  → {len(unique_listings)} unique listing(s)")
 
-    # ═══════════════════════════════════════════════════════════
-    #  STEP 3: FILTER ALREADY-APPLIED
-    # ═══════════════════════════════════════════════════════════
-    logger.info("")
-    logger.info("━" * 50)
+    # 3. FILTER ALREADY APPLIED
+    logger.info("\n" + "━" * 50)
     logger.info("🔎 STEP 3: Filtering already-applied listings…")
     logger.info("━" * 50)
-
     new_listings: list[dict] = []
-    applied_cache = get_applied_urls()  # Load all URLs once (not per-listing)
+    applied_cache = get_applied_urls()
     for listing in unique_listings:
         url = listing.get("apply_url", "")
         if url and url.strip() in applied_cache:
-            logger.info(f"  SKIP Already applied: {listing.get('title')} @ {listing.get('company')}")
             skipped_count += 1
         else:
             new_listings.append(listing)
-
     logger.info(f"  → {len(new_listings)} new listing(s) to evaluate")
 
     if not new_listings:
         logger.info("✅ All listings already applied to — nothing new today")
-        send_summary(applied_listings, skipped_count, error_count)
+        send_summary(applied_listings, skipped_count, error_count, manual_listings)
         return
 
-    # ═══════════════════════════════════════════════════════════
-    #  STEP 4: AI SCORING
-    # ═══════════════════════════════════════════════════════════
-    logger.info("")
+    # 4. AI SCORING
+    logger.info("\n" + "━" * 50)
+    logger.info("🧠 STEP 4: Scoring listings…")
     logger.info("━" * 50)
-    logger.info("🧠 STEP 4: Scoring listings with Claude AI…")
-    logger.info("━" * 50)
-
     try:
         approved_listings = filter_listings(new_listings, profile)
         skipped_count += len(new_listings) - len(approved_listings)
@@ -269,220 +240,125 @@ def run_pipeline():
         send_summary(applied_listings, skipped_count, error_count, manual_listings)
         return
 
-    MAX_APPLY = int(os.getenv("MAX_APPLICATIONS_PER_RUN", "10"))
-    approved_listings = approved_listings[:MAX_APPLY]
-    logger.info(f"  → Capped at {MAX_APPLY} applications per run (MAX_APPLICATIONS_PER_RUN)")
+    # Group by platform to reuse driver per platform efficiently
+    grouped = defaultdict(list)
+    for listing in approved_listings:
+        grouped[listing.get("source")].append(listing)
 
-    # ═══════════════════════════════════════════════════════════
-    #  STEP 5: APPLY TO EACH APPROVED LISTING
-    # ═══════════════════════════════════════════════════════════
-    logger.info("")
-    logger.info("━" * 50)
+    # 5. APPLY
+    logger.info("\n" + "━" * 50)
     logger.info("🚀 STEP 5: Applying to approved listings…")
     logger.info("━" * 50)
 
-    # Check what platforms we need to log into
-    needs_internshala = any(l.get("source") == "internshala" for l in approved_listings)
-    needs_linkedin = any(l.get("source") == "linkedin" for l in approved_listings)
+    driver = create_driver()
     
-    driver = None
     try:
-        logger.info("  🌐 Attaching to persistent Chrome session...")
-        driver = create_driver()
-        if not driver:
-            logger.error("  ✗ Failed to attach to Chrome driver. Logging all as Pending (Manual).")
-            for listing in approved_listings:
-                try:
-                    cover_note = generate_cover_note(listing, profile)
-                except Exception:
-                    cover_note = ""
-                log_application(listing, "Pending (Manual)", cover_note)
-                skipped_count += 1
-        else:
-            for i, listing in enumerate(approved_listings, 1):
+        for source_name, listings in grouped.items():
+            platform = platforms.get(source_name)
+            if not platform:
+                continue
+
+            for listing in listings:
+                if platform.check_circuit_breaker():
+                    logger.warning(f"  ⚠️ Skipping {source_name} due to circuit breaker")
+                    fire_instant_notification(source_name, listing, True, "Circuit breaker tripped (blocked).")
+                    break
+
+                if platform_applied_counts[source_name] >= caps.get(source_name, 10):
+                    logger.info(f"  🛑 Daily cap reached for {source_name} ({caps.get(source_name)})")
+                    break
+
                 company = listing.get("company", "Unknown")
                 title = listing.get("title", "N/A")
-                source = listing.get("source", "unknown")
+                logger.info(f"\n── {title} @ {company} ({source_name}) ──")
 
-                logger.info(f"\n── [{i}/{len(approved_listings)}] {title} @ {company} ({source}) ──")
-
-                # Step 5a: Generate cover note
                 try:
-                    logger.info("  ✍️  Generating cover note…")
                     cover_note = generate_cover_note(listing, profile)
                 except Exception as e:
                     logger.error(f"  ✗ Cover note generation failed: {e}")
                     cover_note = ""
-                    error_count += 1
-    
-                # Step 5b: Apply based on source
-                application_result = {"success": False, "message": "Not attempted"}
-    
-                if source == "internshala":
-                    if not needs_internshala:
-                        application_result = {"success": False, "message": "Login failed previously"}
-                    else:
-                        try:
-                            logger.info("  🖱️ Auto-filling Internshala application…")
-                            application_result = apply_internshala(driver, listing, cover_note, profile)
-                        except Exception as e:
-                            logger.error(f"  ✗ Selenium application failed: {e}")
-                            application_result = {"success": False, "message": str(e)}
-    
-                elif source == "linkedin":
-                    if not needs_linkedin:
-                        application_result = {"success": False, "message": "Login failed previously"}
-                    else:
-                        try:
-                            logger.info("  🖱️ Auto-filling LinkedIn Easy Apply…")
-                            application_result = apply_linkedin(driver, listing, cover_note, profile)
-                        except Exception as e:
-                            logger.error(f"  ✗ Selenium application failed: {e}")
-                            application_result = {"success": False, "message": str(e)}
-    
-                elif source == "letsinternship":
-                    # Try cold email if listing has a contact email
-                    contact_email = listing.get("contact_email", "")
-                    if contact_email and "@" in contact_email:
-                        logger.info(f"  📧 Sending cold email to {contact_email}...")
-                        try:
-                            application_result = send_cold_email(
-                                company=listing.get("company", "Unknown"),
-                                role=listing.get("title", "N/A"),
-                                to_email=contact_email,
-                                cover_note=cover_note,
-                                profile=profile,
-                            )
-                        except Exception as e:
-                            application_result = {"success": False, "message": str(e)}
-                            error_count += 1
-                    else:
-                        logger.info("  ℹ️ No contact email found — logged for manual application")
-                        application_result = {
-                            "success": False,  # Not success — it needs manual action
-                            "message": "Pending (Manual — no email found)",
-                        }
-    
-                # Step 5c: Log the result
-                if application_result.get("success"):
-                    msg = application_result.get("message", "").lower()
+
+                try:
+                    result = platform.apply(listing, cover_note, profile, driver)
+                except Exception as e:
+                    result = {"success": False, "message": str(e)}
+
+                if result.get("success"):
+                    msg = result.get("message", "").lower()
                     if "manual" in msg or "pending" in msg:
-                        manual_listings.append(listing)  # Track separately
+                        manual_listings.append(listing)
                         status = "Pending (Manual)"
                     else:
                         applied_listings.append(listing)
                         status = "Applied"
-                    logger.info(f"  ✅ {application_result.get('message')}")
+                        platform_applied_counts[source_name] += 1
+                        fire_instant_notification(source_name, listing)
+                    logger.info(f"  ✅ {result.get('message')}")
                 else:
-                    status = f"Error: {application_result.get('message')}"
+                    status = f"Error: {result.get('message')}"
                     error_count += 1
-                    logger.warning(f"  ✗ {application_result.get('message')}")
-    
-                # Log to tracker (Google Sheets / CSV)
+                    logger.warning(f"  ✗ {result.get('message')}")
+                    
+                    if "captcha" in status.lower() or "blocked" in status.lower():
+                        fire_instant_notification(source_name, listing, True, result.get('message'))
+
                 try:
                     log_application(listing, status, cover_note)
                 except Exception as e:
                     logger.error(f"  ✗ Failed to log application: {e}")
-    
+
     finally:
         if driver:
             try:
-                logger.info("  🛑 Closing Chrome session...")
                 driver.quit()
             except Exception:
                 pass
 
-    # ═══════════════════════════════════════════════════════════
-    #  STEP 6: SEND TELEGRAM SUMMARY
-    # ═══════════════════════════════════════════════════════════
-    logger.info("")
-    logger.info("━" * 50)
+    # 6. SUMMARY
+    logger.info("\n" + "━" * 50)
     logger.info("📱 STEP 6: Sending Telegram summary…")
     logger.info("━" * 50)
-
     try:
         send_summary(applied_listings, skipped_count, error_count, manual_listings)
     except Exception as e:
         logger.error(f"  ✗ Telegram notification failed: {e}")
 
-    # ═══════════════════════════════════════════════════════════
-    #  SUMMARY
-    # ═══════════════════════════════════════════════════════════
-    logger.info("")
-    logger.info("=" * 60)
+    logger.info("\n" + "=" * 60)
     logger.info("🏁 PIPELINE COMPLETE")
     logger.info(f"  ✅ Applied: {len(applied_listings)}")
     logger.info(f"  ⏭  Skipped: {skipped_count}")
     logger.info(f"  ❌ Errors:  {error_count}")
     logger.info("=" * 60)
 
-
 def main():
-    """
-    Entry point — handles CLI arguments and scheduling.
-    """
-    parser = argparse.ArgumentParser(
-        description="🤖 Internship Automation Bot — Auto-apply to internships daily",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python main.py --run-now     Run the full pipeline immediately
-  python main.py               Start the daily scheduler (9:00 AM)
-  python main.py --time 10:30  Schedule daily at 10:30 AM
-        """,
-    )
-    parser.add_argument(
-        "--run-now",
-        action="store_true",
-        help="Run the pipeline immediately (one-shot, no scheduling)",
-    )
-    parser.add_argument(
-        "--time",
-        type=str,
-        default=SCHEDULE_TIME,
-        help=f"Daily schedule time in HH:MM format (default: {SCHEDULE_TIME})",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Simulate pipeline without actually submitting applications or sending emails",
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-now", action="store_true")
+    parser.add_argument("--time", type=str, default=SCHEDULE_TIME)
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    # Apply dry-run override if flag passed
     if args.dry_run:
         os.environ["DRY_RUN"] = "true"
 
-    # Setup logging
     logger = setup_logging()
 
     if args.run_now:
-        # ─── ONE-SHOT RUN ───
         logger.info("🚀 Running in one-shot mode (--run-now)")
         run_pipeline()
     else:
-        # ─── DAILY SCHEDULER ───
         import schedule
         import time
 
         logger.info(f"⏰ Scheduling daily run at {args.time}")
-        logger.info("   Press Ctrl+C to stop the scheduler")
-        logger.info(f"   Tip: use 'python main.py --run-now' for immediate execution")
-
         schedule.every().day.at(args.time).do(run_pipeline)
-
-        # Also show when the next run is
-        logger.info(f"   Next run: {args.time} tomorrow")
-        logger.info("")
 
         try:
             while True:
                 schedule.run_pending()
-                time.sleep(60)  # Check every minute
+                time.sleep(60)
         except KeyboardInterrupt:
             logger.info("\n👋 Scheduler stopped by user. Goodbye!")
             sys.exit(0)
-
 
 if __name__ == "__main__":
     main()
