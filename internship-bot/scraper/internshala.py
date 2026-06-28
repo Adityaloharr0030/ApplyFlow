@@ -118,7 +118,7 @@ def _parse_listing_card(card) -> dict[str, Any] | None:
         return None
 
 
-def _scrape_page(url: str, session: requests.Session) -> list[dict]:
+def _scrape_page_internal(url: str, session: requests.Session) -> list[dict]:
     """
     Fetch a single Internshala page and extract all internship listings from it.
     """
@@ -176,6 +176,16 @@ def _scrape_page(url: str, session: requests.Session) -> list[dict]:
 
     return listings
 
+def _scrape_page_with_retry(url: str, session: requests.Session, max_retries: int = 3) -> list[dict]:
+    for attempt in range(1, max_retries + 1):
+        result = _scrape_page_internal(url, session)
+        if result:
+            return result
+        if attempt < max_retries:
+            wait = 2 ** attempt
+            logger.info(f"  Retry {attempt}/{max_retries} in {wait}s for {url}")
+            time.sleep(wait)
+    return []
 
 def scrape_internshala(profile: dict) -> list[dict]:
     """
@@ -199,8 +209,12 @@ def scrape_internshala(profile: dict) -> list[dict]:
     for base_url in urls:
         # Scrape first 2 pages for each search URL
         for page in range(1, 3):
-            page_url = f"{base_url}/page-{page}" if page > 1 else base_url
-            page_listings = _scrape_page(page_url, session)
+            if page > 1:
+                separator = "&" if "?" in base_url else "?"
+                page_url = f"{base_url}{separator}page={page}"
+            else:
+                page_url = base_url
+            page_listings = _scrape_page_with_retry(page_url, session)
 
             for listing in page_listings:
                 # Deduplicate by URL within this scraper run

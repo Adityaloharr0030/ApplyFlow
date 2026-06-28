@@ -30,16 +30,16 @@ def deduplicate(listings: list[dict]) -> list[dict]:
     duplicates_removed = 0
 
     for listing in listings:
-        # Build a normalized dedup key from company + title
-        company = listing.get("company", "").strip().lower()
-        title = listing.get("title", "").strip().lower()
-
-        # Also normalize common variations
-        # Remove extra whitespace
-        company = " ".join(company.split())
-        title = " ".join(title.split())
-
-        dedup_key = f"{company}||{title}"
+        # Priority: deduplicate by URL first, then by company+title
+        url = listing.get("apply_url", "").strip()
+        if url:
+            dedup_key = f"url::{url}"
+        else:
+            company = listing.get("company", "").strip().lower()
+            title = listing.get("title", "").strip().lower()
+            company = " ".join(company.split())
+            title = " ".join(title.split())
+            dedup_key = f"meta::{company}||{title}"
 
         if dedup_key not in seen:
             seen.add(dedup_key)

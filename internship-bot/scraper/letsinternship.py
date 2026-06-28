@@ -134,7 +134,7 @@ def _parse_listing(element) -> dict[str, Any] | None:
         return None
 
 
-def _scrape_page(url: str, session: requests.Session) -> list[dict]:
+def _scrape_page_internal(url: str, session: requests.Session) -> list[dict]:
     """
     Fetch a single LetsIntern page and extract all listings.
     """
@@ -206,6 +206,16 @@ def _scrape_page(url: str, session: requests.Session) -> list[dict]:
 
     return listings
 
+def _scrape_page_with_retry(url: str, session: requests.Session, max_retries: int = 3) -> list[dict]:
+    for attempt in range(1, max_retries + 1):
+        result = _scrape_page_internal(url, session)
+        if result:
+            return result
+        if attempt < max_retries:
+            wait = 2 ** attempt
+            logger.info(f"  Retry {attempt}/{max_retries} in {wait}s for {url}")
+            time.sleep(wait)
+    return []
 
 def scrape_letsinternship(profile: dict) -> list[dict]:
     """
@@ -226,7 +236,7 @@ def scrape_letsinternship(profile: dict) -> list[dict]:
     session = requests.Session()
 
     for url in urls:
-        page_listings = _scrape_page(url, session)
+        page_listings = _scrape_page_with_retry(url, session)
 
         for listing in page_listings:
             if listing["apply_url"] not in seen_urls:

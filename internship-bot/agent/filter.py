@@ -23,9 +23,9 @@ MAX_RETRIES = 2
 _gemini_disabled = False
 
 
-def _get_model():
+def _get_client():
     """
-    Configure and return a Gemini model instance.
+    Configure and return a Gemini client instance.
     Returns None if the API key is missing or Gemini was disabled this run.
     """
     global _gemini_disabled
@@ -37,12 +37,11 @@ def _get_model():
         return None
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        return model
+        from google import genai as google_genai
+        client = google_genai.Client(api_key=api_key)
+        return client
     except Exception as e:
-        logger.warning(f"[Filter] Could not initialize Gemini: {e}")
+        logger.warning(f"[Filter] Could not initialize Gemini client: {e}")
         return None
 
 
@@ -106,12 +105,13 @@ def _score_with_keywords(listing: dict, profile: dict) -> dict:
     return {"score": score, "reason": reason, "apply": apply_decision}
 
 
-def _score_with_ai(listing: dict, profile: dict, model) -> dict | None:
+def _score_with_ai(listing: dict, profile: dict, client) -> dict | None:
     """
     Score using Gemini AI. Returns None if the API call fails (triggers fallback).
     """
     global _gemini_disabled
 
+    MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
     prompt = f"""You are a career advisor. Score this internship match 1-10.
 
 INTERNSHIP: {listing.get('title', 'N/A')} at {listing.get('company', 'N/A')} ({listing.get('location', 'N/A')})
@@ -123,7 +123,12 @@ Respond ONLY with JSON: {{"score": <1-10>, "reason": "<short reason>", "apply": 
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = model.generate_content(prompt)
+            from google.genai import types as genai_types
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(max_output_tokens=200)
+            )
             text = response.text.strip()
 
             # Strip markdown fences
@@ -141,7 +146,7 @@ Respond ONLY with JSON: {{"score": <1-10>, "reason": "<short reason>", "apply": 
 
         except Exception as e:
             err_str = str(e).lower()
-            if "429" in str(e) or "quota" in err_str or "rate" in err_str:
+            if "429" in str(e) or "quota" in err_str or "rate" in err_str or "resource_exhausted" in err_str:
                 if attempt < MAX_RETRIES:
                     wait = 8 * (2 ** attempt)
                     logger.info(f"  [Retry {attempt}/{MAX_RETRIES}] Rate limited, waiting {wait}s...")
@@ -168,9 +173,9 @@ def score_listing(listing: dict, profile: dict) -> dict:
 
     try:
         # Try AI scoring first
-        model = _get_model()
-        if model:
-            ai_result = _score_with_ai(listing, profile, model)
+        client = _get_client()
+        if client:
+            ai_result = _score_with_ai(listing, profile, client)
             if ai_result:
                 status = "YES" if ai_result["apply"] else "SKIP"
                 logger.info(
@@ -198,8 +203,8 @@ def filter_listings(listings: list[dict], profile: dict) -> list[dict]:
     Score all listings and return only those worth applying to (score >= 6).
     Uses AI if available, otherwise falls back to local keyword matching.
     """
-    model = _get_model()
-    mode = "Gemini AI" if model else "local keyword matching (no API)"
+    client = _get_client()
+    mode = "Gemini AI" if client else "local keyword matching (no API)"
     logger.info(f"[Filter] Scoring {len(listings)} listing(s) with {mode}...")
 
     approved: list[dict] = []
@@ -222,7 +227,7 @@ def filter_listings(listings: list[dict], profile: dict) -> list[dict]:
             approved.append(listing)
 
         # Delay between API calls (only if using Gemini)
-        if not _gemini_disabled and model:
+        if not _gemini_disabled and client:
             time.sleep(API_CALL_DELAY)
 
     logger.info(

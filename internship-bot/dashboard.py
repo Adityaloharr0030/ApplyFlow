@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 import os
+import plotly.express as px
 
 # --- Page Config ---
 st.set_page_config(
@@ -78,6 +79,12 @@ if st.sidebar.button("🔄 Refresh Data"):
     st.rerun()
 
 st.sidebar.markdown("---")
+if st.sidebar.button("▶️ Run Bot Now (Dry Run)"):
+    import subprocess
+    st.sidebar.info("Starting bot in background...")
+    subprocess.Popen(["python", "main.py", "--run-now", "--dry-run"], cwd=str(BASE_DIR))
+
+st.sidebar.markdown("---")
 st.sidebar.subheader("Filter Results")
 
 if not df.empty:
@@ -142,6 +149,17 @@ with col4:
         <div class="metric-label">Application Errors</div>
     </div>
     """, unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# --- Success Rate Chart ---
+if not filtered_df.empty:
+    st.subheader("📊 Application Success Rate")
+    status_counts = filtered_df["Status"].value_counts().reset_index()
+    status_counts.columns = ["Status", "Count"]
+    fig = px.pie(status_counts, values="Count", names="Status", hole=0.4,
+                 color_discrete_sequence=px.colors.qualitative.Pastel)
+    st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 

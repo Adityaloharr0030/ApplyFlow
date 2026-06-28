@@ -27,17 +27,17 @@ Best regards,
 {name}"""
 
 
-def _get_model():
+def _get_client():
     api_key = os.getenv("GEMINI_API_KEY", "")
     if not api_key or api_key == "your_gemini_key_here":
         return None
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        return genai.GenerativeModel("gemini-2.0-flash")
+        from google import genai as google_genai
+        client = google_genai.Client(api_key=api_key)
+        return client
     except Exception as e:
-        logger.warning(f"[CoverNote] Could not initialize Gemini: {e}")
+        logger.warning(f"[CoverNote] Could not initialize Gemini client: {e}")
         return None
 
 
@@ -48,8 +48,9 @@ def generate_cover_note(listing: dict, profile: dict) -> str:
     title = listing.get("title", "Software Engineering")
     company = listing.get("company", "your company")
 
-    model = _get_model()
-    if model:
+    client = _get_client()
+    if client:
+        MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
         prompt = f"""Write a short, professional cover letter for the following internship.
 
 INTERNSHIP: {title} at {company}
@@ -65,9 +66,14 @@ RULES:
 3. Do not include placeholder brackets like [Address] or [Date].
 4. Output ONLY the letter text. No markdown formatting.
 """
+        from google.genai import types as genai_types
         for attempt in range(1, 3):
             try:
-                response = model.generate_content(prompt)
+                response = client.models.generate_content(
+                    model=MODEL,
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(max_output_tokens=300)
+                )
                 text = response.text.strip()
                 if text:
                     return text

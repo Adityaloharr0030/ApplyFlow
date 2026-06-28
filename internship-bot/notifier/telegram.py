@@ -15,24 +15,6 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
-async def _send_message_async(bot_token: str, chat_id: str, text: str) -> bool:
-    """
-    Send a Telegram message using the python-telegram-bot library (async).
-    """
-    try:
-        from telegram import Bot
-
-        bot = Bot(token=bot_token)
-        await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode="HTML",
-        )
-        return True
-    except Exception as e:
-        logger.warning(f"[Telegram] ✗ Failed to send via async bot: {e}")
-        return False
-
 
 def _send_message_requests(bot_token: str, chat_id: str, text: str) -> bool:
     """
@@ -60,7 +42,7 @@ def _send_message_requests(bot_token: str, chat_id: str, text: str) -> bool:
         return False
 
 
-def send_summary(applied: list[dict], skipped: int, errors: int):
+def send_summary(applied: list[dict], skipped: int, errors: int, manual: list[dict] = None):
     """
     Send a daily summary report to Telegram.
 
@@ -110,6 +92,14 @@ def send_summary(applied: list[dict], skipped: int, errors: int):
         lines.append("")
         lines.append("ℹ️ No new applications today.")
 
+    if manual:
+        lines.append("")
+        lines.append("<b>⚠️ Needs Manual Review:</b>")
+        for listing in manual:
+            company = listing.get("company", "Unknown")
+            role = listing.get("title", "N/A")
+            lines.append(f"• {company} — {role}")
+
     # Footer
     lines.append("")
     lines.append("🔄 Next run scheduled for tomorrow at 9:00 AM")
@@ -125,20 +115,4 @@ def send_summary(applied: list[dict], skipped: int, errors: int):
     if success:
         logger.info("[Telegram] ✅ Summary sent successfully")
     else:
-        # Method 2: Try async method as fallback
-        try:
-            import asyncio
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            success = loop.run_until_complete(
-                _send_message_async(bot_token, chat_id, message)
-            )
-            loop.close()
-
-            if success:
-                logger.info("[Telegram] ✅ Summary sent via async fallback")
-            else:
-                logger.warning("[Telegram] ✗ Could not send summary — check bot token and chat ID")
-        except Exception as e:
-            logger.warning(f"[Telegram] ✗ All send methods failed: {e}")
+        logger.warning("[Telegram] ✗ Could not send summary — check bot token and chat ID")

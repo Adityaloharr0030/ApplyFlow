@@ -107,7 +107,30 @@ def load_profile() -> dict:
     with open(PROFILE_PATH, "r", encoding="utf-8") as f:
         profile = json.load(f)
 
+    # After loading profile, warn about placeholders:
+    logger = logging.getLogger("main")
+    placeholders = {
+        "email": "your_email@gmail.com",
+        "github": "https://github.com/yourusername",
+    }
+    for field, placeholder in placeholders.items():
+        if profile.get(field) == placeholder:
+            logger.warning(f"⚠️  profile.json: '{field}' still has placeholder value — update it!")
+
     return profile
+
+def validate_env(logger) -> None:
+    checks = [
+        ("GEMINI_API_KEY", "your_gemini_key_here", "AI scoring disabled — using local keyword matching"),
+        ("INTERNSHALA_EMAIL", None, "Internshala auto-apply disabled"),
+        ("LINKEDIN_EMAIL", None, "LinkedIn scraper disabled"),
+        ("TELEGRAM_BOT_TOKEN", "your_bot_token_here", "Telegram notifications disabled"),
+        ("GMAIL_ADDRESS", None, "Cold email disabled"),
+    ]
+    for key, placeholder, msg in checks:
+        val = os.getenv(key, "")
+        if not val or val == placeholder:
+            logger.warning(f"⚠️  {key} not configured — {msg}")
 
 
 def run_pipeline():
@@ -127,12 +150,14 @@ def run_pipeline():
 
     # Load candidate profile
     profile = load_profile()
+    validate_env(logger)
     logger.info(f"👤 Candidate: {profile.get('name', 'Unknown')}")
     logger.info(f"🎓 {profile.get('degree', 'N/A')} — {profile.get('year', 'N/A')}")
     logger.info(f"🔑 Keywords: {', '.join(profile.get('keywords', []))}")
 
     # Tracking counters
     applied_listings: list[dict] = []
+    manual_listings: list[dict] = []
     skipped_count = 0
     error_count = 0
 
@@ -241,8 +266,12 @@ def run_pipeline():
 
     if not approved_listings:
         logger.info("ℹ️ No listings scored high enough to apply — done for today")
-        send_summary(applied_listings, skipped_count, error_count)
+        send_summary(applied_listings, skipped_count, error_count, manual_listings)
         return
+
+    MAX_APPLY = int(os.getenv("MAX_APPLICATIONS_PER_RUN", "10"))
+    approved_listings = approved_listings[:MAX_APPLY]
+    logger.info(f"  → Capped at {MAX_APPLY} applications per run (MAX_APPLICATIONS_PER_RUN)")
 
     # ═══════════════════════════════════════════════════════════
     #  STEP 5: APPLY TO EACH APPROVED LISTING
@@ -312,17 +341,37 @@ def run_pipeline():
                             application_result = {"success": False, "message": str(e)}
     
                 elif source == "letsinternship":
-                    try:
-                        logger.info("  🖱️ Auto-filling LetsInternship application…")
-                        application_result = apply_letsinternship(driver, listing, cover_note, profile)
-                    except Exception as e:
-                        logger.error(f"  ✗ Selenium application failed: {e}")
-                        application_result = {"success": False, "message": str(e)}
+                    # Try cold email if listing has a contact email
+                    contact_email = listing.get("contact_email", "")
+                    if contact_email and "@" in contact_email:
+                        logger.info(f"  📧 Sending cold email to {contact_email}...")
+                        try:
+                            application_result = send_cold_email(
+                                company=listing.get("company", "Unknown"),
+                                role=listing.get("title", "N/A"),
+                                to_email=contact_email,
+                                cover_note=cover_note,
+                                profile=profile,
+                            )
+                        except Exception as e:
+                            application_result = {"success": False, "message": str(e)}
+                            error_count += 1
+                    else:
+                        logger.info("  ℹ️ No contact email found — logged for manual application")
+                        application_result = {
+                            "success": False,  # Not success — it needs manual action
+                            "message": "Pending (Manual — no email found)",
+                        }
     
                 # Step 5c: Log the result
                 if application_result.get("success"):
-                    status = "Applied" if "manual" not in application_result.get("message", "").lower() else "Pending (Manual)"
-                    applied_listings.append(listing)
+                    msg = application_result.get("message", "").lower()
+                    if "manual" in msg or "pending" in msg:
+                        manual_listings.append(listing)  # Track separately
+                        status = "Pending (Manual)"
+                    else:
+                        applied_listings.append(listing)
+                        status = "Applied"
                     logger.info(f"  ✅ {application_result.get('message')}")
                 else:
                     status = f"Error: {application_result.get('message')}"
@@ -352,7 +401,7 @@ def run_pipeline():
     logger.info("━" * 50)
 
     try:
-        send_summary(applied_listings, skipped_count, error_count)
+        send_summary(applied_listings, skipped_count, error_count, manual_listings)
     except Exception as e:
         logger.error(f"  ✗ Telegram notification failed: {e}")
 
@@ -393,7 +442,16 @@ Examples:
         default=SCHEDULE_TIME,
         help=f"Daily schedule time in HH:MM format (default: {SCHEDULE_TIME})",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate pipeline without actually submitting applications or sending emails",
+    )
     args = parser.parse_args()
+
+    # Apply dry-run override if flag passed
+    if args.dry_run:
+        os.environ["DRY_RUN"] = "true"
 
     # Setup logging
     logger = setup_logging()

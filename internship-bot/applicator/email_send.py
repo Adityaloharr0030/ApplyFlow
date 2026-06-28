@@ -105,6 +105,10 @@ def send_cold_email(
             logger.info(f"  ℹ️ Resume file not found at {resume_path} — sending without attachment")
 
         # Send via Gmail SMTP
+        if os.getenv("DRY_RUN", "false").lower() == "true":
+            logger.info(f"  [DRY RUN] Would send email to {to_email} for {role} @ {company}")
+            return {"success": True, "message": "Dry run — not sent"}
+
         logger.info(f"[Email] Sending cold email to {to_email} for {role} @ {company}…")
 
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
