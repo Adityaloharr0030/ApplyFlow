@@ -44,104 +44,38 @@ def _ensure_screenshot_dir():
 
 def create_driver():
     """
-    Create an undetected Chrome WebDriver instance with a persistent profile.
-    Returns None if Chrome/chromedriver aren't available.
+    Hijack the user's actual Chrome profile. 
+    Kills any existing Chrome instances first, then launches with undetected_chromedriver
+    using the default User Data directory so all logins are preserved.
     """
     try:
+        import os
         import undetected_chromedriver as uc
         from pathlib import Path
 
-        profile_dir = Path("./logs/chrome_profile").absolute()
-        profile_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("[Selenium] Force-closing existing Chrome processes...")
+        os.system("taskkill /F /IM chrome.exe /T >nul 2>&1")
+        import time
+        time.sleep(2) # Give it a moment to fully close
 
         options = uc.ChromeOptions()
-        options.add_argument(f"--user-data-dir={profile_dir}")
+        # Point to the user's actual Chrome profile
+        user_data_dir = r"C:\Users\ADITYA\AppData\Local\Google\Chrome\User Data"
+        options.add_argument(f"--user-data-dir={user_data_dir}")
+        options.add_argument("--profile-directory=Default")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--window-size=1920,1080")
-        # options.add_argument("--headless=new") # Headless breaks many CAPTCHAs
 
+        logger.info("[Selenium] Launching undetected_chromedriver with user's default profile...")
         driver = uc.Chrome(options=options, use_subprocess=True)
         driver.implicitly_wait(10)
+        
+        logger.info("[Selenium] Successfully hijacked default Chrome profile!")
         return driver
     except Exception as e:
-        logger.error(f"[SeleniumFill] Failed to create Chrome driver: {e}")
+        logger.error(f"[SeleniumFill] Failed to hijack Chrome: {e}")
         return None
-
-
-def login_internshala(driver) -> bool:
-    """
-    Log into Internshala. Checks if already logged in first.
-    Returns True on success.
-    """
-    try:
-        logger.info("[Internshala] Checking login status...")
-        driver.get("https://internshala.com/")
-        time.sleep(random.uniform(2.0, 4.0))
-
-        # If "Login" button is not present, we are likely already logged in
-        page_source = driver.page_source.lower()
-        if "logout" in page_source or "my applications" in page_source or "aditya" in page_source:
-            logger.info("[Internshala] ✓ Already logged in (using saved session)")
-            return True
-
-        # Need to log in
-        email = os.getenv("INTERNSHALA_EMAIL", "")
-        password = os.getenv("INTERNSHALA_PASSWORD", "")
-
-        if not email or not password:
-            logger.warning("[Internshala] ✗ Credentials not set in .env")
-            return False
-
-        logger.info("[Internshala] Logging in…")
-        driver.get("https://internshala.com/login")
-        time.sleep(random.uniform(2.0, 3.5))
-
-        email_field = driver.find_element("id", "email")
-        email_field.clear()
-        email_field.send_keys(email)
-        time.sleep(random.uniform(0.3, 0.8))
-
-        pass_field = driver.find_element("id", "password")
-        pass_field.clear()
-        pass_field.send_keys(password)
-        time.sleep(random.uniform(0.3, 0.8))
-
-        login_btn = driver.find_element(
-            "css selector",
-            "button#login_submit, button[type='submit']"
-        )
-        login_btn.click()
-        time.sleep(random.uniform(3.0, 5.0))
-
-        # Check for CAPTCHA
-        page_source = driver.page_source.lower()
-        if "captcha" in page_source or "recaptcha" in page_source:
-            logger.warning("[Internshala] ⚠️ CAPTCHA detected! Pausing for 60 seconds so you can solve it manually in the Chrome window...")
-            _take_screenshot(driver, "captcha_detected")
-            time.sleep(60)
-            
-            if "login" not in driver.current_url.lower():
-                logger.info("[Internshala] ✓ Manual CAPTCHA solve successful!")
-                return True
-            else:
-                logger.warning("[Internshala] ✗ CAPTCHA not solved in time.")
-                return False
-
-        current_url = driver.current_url
-        if "login" not in current_url.lower():
-            logger.info("[Internshala] ✓ Login successful")
-            return True
-
-        logger.warning("[Internshala] ✗ Login might have failed — still on login page")
-        _take_screenshot(driver, "login_uncertain")
-        return False
-
-    except Exception as e:
-        logger.error(f"[Internshala] Login error: {e}")
-        _take_screenshot(driver, "login_error")
-        return False
 
 
 def apply_internshala(driver, listing: dict, cover_note: str, profile: dict) -> dict:

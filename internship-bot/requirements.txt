@@ -13,7 +13,7 @@ selenium==4.21.0
 undetected-chromedriver==3.5.5
 
 # --- AI (Google Gemini — FREE tier) ---
-google-generativeai==0.8.3
+google-generativeai>=0.7.0
 
 # --- Google Sheets Logging ---
 gspread==6.1.2
@@ -31,3 +31,6 @@ schedule==1.2.2
 
 # --- Environment Variables ---
 python-dotenv==1.0.1
+
+# --- Dashboard ---
+streamlit==1.35.0

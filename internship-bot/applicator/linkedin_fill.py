@@ -32,64 +32,7 @@ def _take_screenshot(driver, label: str):
     except Exception as e:
         logger.debug(f"Failed to save screenshot: {e}")
 
-def login_linkedin(driver) -> bool:
-    """
-    Log into LinkedIn. Checks if already logged in first.
-    Returns True on success.
-    """
-    try:
-        logger.info("[LinkedIn] Checking login status...")
-        driver.get("https://www.linkedin.com/feed/")
-        time.sleep(random.uniform(3.0, 5.0))
 
-        if "feed" in driver.current_url.lower() or "identity" not in driver.current_url.lower():
-            logger.info("[LinkedIn] ✓ Already logged in (using saved session)")
-            return True
-
-        email = os.getenv("LINKEDIN_EMAIL", "")
-        password = os.getenv("LINKEDIN_PASSWORD", "")
-
-        if not email or not password:
-            logger.warning("[LinkedIn] ✗ Credentials not set in .env")
-            return False
-
-        logger.info("[LinkedIn] Logging in…")
-        driver.get("https://www.linkedin.com/login")
-        time.sleep(random.uniform(2.0, 3.5))
-
-        email_field = driver.find_element("id", "username")
-        email_field.clear()
-        email_field.send_keys(email)
-        time.sleep(random.uniform(0.3, 0.8))
-
-        pass_field = driver.find_element("id", "password")
-        pass_field.clear()
-        pass_field.send_keys(password)
-        time.sleep(random.uniform(0.3, 0.8))
-
-        login_btn = driver.find_element("css selector", "button[type='submit']")
-        login_btn.click()
-        time.sleep(random.uniform(5.0, 8.0))
-
-        # Check for CAPTCHA
-        page_source = driver.page_source.lower()
-        if "captcha" in page_source or "security" in page_source or "challenge" in driver.current_url.lower():
-            logger.warning("[LinkedIn] ⚠️ CAPTCHA/Security Check detected! Pausing for 60 seconds...")
-            _take_screenshot(driver, "linkedin_captcha")
-            time.sleep(60)
-
-        if "feed" in driver.current_url.lower() or "jobs" in driver.current_url.lower():
-            logger.info("[LinkedIn] ✓ Login successful")
-            return True
-
-        logger.warning("[LinkedIn] ✗ Login might have failed")
-        _take_screenshot(driver, "linkedin_login_uncertain")
-        return False
-
-    except Exception as e:
-        logger.error(f"[LinkedIn] Login error: {e}")
-        _take_screenshot(driver, "linkedin_login_error")
-        return False
 
 def apply_linkedin(driver, listing: dict, cover_note: str, profile: dict) -> dict:
     """

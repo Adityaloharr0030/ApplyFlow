@@ -44,7 +44,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Data Loading ---
-CSV_PATH = Path("logs/applications.csv")
+BASE_DIR = Path(__file__).resolve().parent
+CSV_PATH = BASE_DIR / "logs" / "applications.csv"
 
 @st.cache_data(ttl=60) # Refresh data every minute
 def load_data():

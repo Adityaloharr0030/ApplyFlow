@@ -38,13 +38,12 @@ from scraper.linkedin import scrape_linkedin
 from scraper.letsinternship import scrape_letsinternship
 from agent.filter import filter_listings
 from agent.cover_note import generate_cover_note
-from applicator.selenium_fill import apply_internshala, create_driver, login_internshala
-from applicator.linkedin_fill import apply_linkedin, login_linkedin
+from applicator.selenium_fill import apply_internshala, create_driver
+from applicator.linkedin_fill import apply_linkedin
 from applicator.letsintern_fill import apply_letsinternship
 from applicator.email_send import send_cold_email
 from tracker.sheets import log_application, already_applied, get_applied_urls
 from notifier.telegram import send_summary
-from utils.dedup import deduplicate
 from utils.dedup import deduplicate
 
 # ─── Constants ───
@@ -259,87 +258,83 @@ def run_pipeline():
     
     driver = None
     try:
-        logger.info("  🌐 Initializing persistent Chrome session...")
+        logger.info("  🌐 Attaching to persistent Chrome session...")
         driver = create_driver()
         if not driver:
-            logger.error("  ✗ Failed to initialize Chrome driver. Aborting auto-apply.")
-            return
-
-        if needs_internshala:
-            if not login_internshala(driver):
-                logger.error("  ✗ Internshala login failed. Will skip those listings.")
-                needs_internshala = False
-                
-        if needs_linkedin:
-            if not login_linkedin(driver):
-                logger.error("  ✗ LinkedIn login failed. Will skip those listings.")
-                needs_linkedin = False
-
-        for i, listing in enumerate(approved_listings, 1):
-            company = listing.get("company", "Unknown")
-            title = listing.get("title", "N/A")
-            source = listing.get("source", "unknown")
-
-            logger.info(f"\n── [{i}/{len(approved_listings)}] {title} @ {company} ({source}) ──")
-
-            # Step 5a: Generate cover note
-            try:
-                logger.info("  ✍️  Generating cover note…")
-                cover_note = generate_cover_note(listing, profile)
-            except Exception as e:
-                logger.error(f"  ✗ Cover note generation failed: {e}")
-                cover_note = ""
-                error_count += 1
-
-            # Step 5b: Apply based on source
-            application_result = {"success": False, "message": "Not attempted"}
-
-            if source == "internshala":
-                if not needs_internshala:
-                    application_result = {"success": False, "message": "Login failed previously"}
-                else:
-                    try:
-                        logger.info("  🖱️ Auto-filling Internshala application…")
-                        application_result = apply_internshala(driver, listing, cover_note, profile)
-                    except Exception as e:
-                        logger.error(f"  ✗ Selenium application failed: {e}")
-                        application_result = {"success": False, "message": str(e)}
-
-            elif source == "linkedin":
-                if not needs_linkedin:
-                    application_result = {"success": False, "message": "Login failed previously"}
-                else:
-                    try:
-                        logger.info("  🖱️ Auto-filling LinkedIn Easy Apply…")
-                        application_result = apply_linkedin(driver, listing, cover_note, profile)
-                    except Exception as e:
-                        logger.error(f"  ✗ Selenium application failed: {e}")
-                        application_result = {"success": False, "message": str(e)}
-
-            elif source == "letsinternship":
+            logger.error("  ✗ Failed to attach to Chrome driver. Logging all as Pending (Manual).")
+            for listing in approved_listings:
                 try:
-                    logger.info("  🖱️ Auto-filling LetsInternship application…")
-                    application_result = apply_letsinternship(driver, listing, cover_note, profile)
+                    cover_note = generate_cover_note(listing, profile)
+                except Exception:
+                    cover_note = ""
+                log_application(listing, "Pending (Manual)", cover_note)
+                skipped_count += 1
+        else:
+            for i, listing in enumerate(approved_listings, 1):
+                company = listing.get("company", "Unknown")
+                title = listing.get("title", "N/A")
+                source = listing.get("source", "unknown")
+
+                logger.info(f"\n── [{i}/{len(approved_listings)}] {title} @ {company} ({source}) ──")
+
+                # Step 5a: Generate cover note
+                try:
+                    logger.info("  ✍️  Generating cover note…")
+                    cover_note = generate_cover_note(listing, profile)
                 except Exception as e:
-                    logger.error(f"  ✗ Selenium application failed: {e}")
-                    application_result = {"success": False, "message": str(e)}
-
-            # Step 5c: Log the result
-            if application_result.get("success"):
-                status = "Applied" if "manual" not in application_result.get("message", "").lower() else "Pending (Manual)"
-                applied_listings.append(listing)
-                logger.info(f"  ✅ {application_result.get('message')}")
-            else:
-                status = f"Error: {application_result.get('message')}"
-                error_count += 1
-                logger.warning(f"  ✗ {application_result.get('message')}")
-
-            # Log to tracker (Google Sheets / CSV)
-            try:
-                log_application(listing, status, cover_note)
-            except Exception as e:
-                logger.error(f"  ✗ Failed to log application: {e}")
-
+                    logger.error(f"  ✗ Cover note generation failed: {e}")
+                    cover_note = ""
+                    error_count += 1
+    
+                # Step 5b: Apply based on source
+                application_result = {"success": False, "message": "Not attempted"}
+    
+                if source == "internshala":
+                    if not needs_internshala:
+                        application_result = {"success": False, "message": "Login failed previously"}
+                    else:
+                        try:
+                            logger.info("  🖱️ Auto-filling Internshala application…")
+                            application_result = apply_internshala(driver, listing, cover_note, profile)
+                        except Exception as e:
+                            logger.error(f"  ✗ Selenium application failed: {e}")
+                            application_result = {"success": False, "message": str(e)}
+    
+                elif source == "linkedin":
+                    if not needs_linkedin:
+                        application_result = {"success": False, "message": "Login failed previously"}
+                    else:
+                        try:
+                            logger.info("  🖱️ Auto-filling LinkedIn Easy Apply…")
+                            application_result = apply_linkedin(driver, listing, cover_note, profile)
+                        except Exception as e:
+                            logger.error(f"  ✗ Selenium application failed: {e}")
+                            application_result = {"success": False, "message": str(e)}
+    
+                elif source == "letsinternship":
+                    try:
+                        logger.info("  🖱️ Auto-filling LetsInternship application…")
+                        application_result = apply_letsinternship(driver, listing, cover_note, profile)
+                    except Exception as e:
+                        logger.error(f"  ✗ Selenium application failed: {e}")
+                        application_result = {"success": False, "message": str(e)}
+    
+                # Step 5c: Log the result
+                if application_result.get("success"):
+                    status = "Applied" if "manual" not in application_result.get("message", "").lower() else "Pending (Manual)"
+                    applied_listings.append(listing)
+                    logger.info(f"  ✅ {application_result.get('message')}")
+                else:
+                    status = f"Error: {application_result.get('message')}"
+                    error_count += 1
+                    logger.warning(f"  ✗ {application_result.get('message')}")
+    
+                # Log to tracker (Google Sheets / CSV)
+                try:
+                    log_application(listing, status, cover_note)
+                except Exception as e:
+                    logger.error(f"  ✗ Failed to log application: {e}")
+    
     finally:
         if driver:
             try:

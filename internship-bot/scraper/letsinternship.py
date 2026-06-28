@@ -3,9 +3,12 @@ scraper/letsinternship.py
 ─────────────────────────
 Scrapes internship listings from LetsInternship (letsintern.com).
 - Uses requests + BeautifulSoup
-- Searches the main internships page + keyword variants
 - Returns same dict format as other scrapers
 - Returns empty list on any error — never crashes the bot
+
+NOTE: As of mid-2026, letsintern.com appears to have been repurposed and
+no longer hosts internship listings. This scraper will return an empty list
+but is kept for forward-compatibility in case the site returns.
 """
 
 import logging
@@ -31,8 +34,6 @@ HEADERS = {
 # LetsIntern.com is the actual domain for LetsInternship
 BASE_URLS = [
     "https://www.letsintern.com/internships",
-    "https://www.letsintern.com/internships?q=software",
-    "https://www.letsintern.com/internships?q=web+development",
 ]
 
 
@@ -42,12 +43,29 @@ def _build_keyword_urls(profile: dict) -> list[str]:
     """
     urls = []
     keywords = profile.get("keywords", [])
-    for kw in keywords:
+    for kw in keywords[:3]:  # Limit to 3 keywords to avoid excessive requests
         slug = kw.strip().replace(" ", "+")
         url = f"https://www.letsintern.com/internships?q={slug}"
         if url not in BASE_URLS:
             urls.append(url)
     return urls
+
+
+def _is_internship_site(soup: BeautifulSoup) -> bool:
+    """
+    Quick sanity check: does this page look like an internship listing site?
+    Checks title and body text for internship-related content.
+    """
+    title = (soup.title.string or "").lower() if soup.title else ""
+    # If the title mentions casino, gambling, etc., it's been hijacked
+    bad_keywords = ["casino", "gambling", "betting", "poker", "slots"]
+    if any(kw in title for kw in bad_keywords):
+        return False
+    # Check for internship-related content
+    if "intern" in title:
+        return True
+    # Ambiguous — assume it's still valid
+    return True
 
 
 def _parse_listing(element) -> dict[str, Any] | None:
@@ -127,6 +145,14 @@ def _scrape_page(url: str, session: requests.Session) -> list[dict]:
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Sanity check: is this still an internship site?
+        if not _is_internship_site(soup):
+            logger.warning(
+                "[LetsInternship] Site content does not appear to be internship-related "
+                "(domain may have been repurposed) — skipping"
+            )
+            return []
 
         # Try multiple selectors for listing containers
         cards = soup.select(
@@ -211,6 +237,11 @@ def scrape_letsinternship(profile: dict) -> list[dict]:
         delay = random.uniform(2.0, 3.0)
         logger.debug(f"  ⏳ Sleeping {delay:.1f}s…")
         time.sleep(delay)
+
+        # If first URL already detected the site is dead, don't bother with more
+        if not page_listings and url == BASE_URLS[0]:
+            logger.info("[LetsInternship] Base URL returned no listings — skipping remaining URLs")
+            break
 
     logger.info(f"[LetsInternship] ✓ Found {len(all_listings)} unique listing(s)")
     return all_listings

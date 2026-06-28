@@ -60,7 +60,7 @@ def _parse_listing_card(card) -> dict[str, Any] | None:
     """
     try:
         # --- Title ---
-        title_tag = card.select_one("h3.job-internship-name, a.job-title-href, .profile h3")
+        title_tag = card.select_one("h2.job-internship-name, a.job-title-href, h3.job-internship-name")
         title = title_tag.get_text(strip=True) if title_tag else None
 
         # --- Company ---
@@ -74,8 +74,13 @@ def _parse_listing_card(card) -> dict[str, Any] | None:
         location = location_tag.get_text(strip=True) if location_tag else "Not specified"
 
         # --- Duration ---
-        duration_items = card.select(".row-1-item .item_body")
-        duration = duration_items[0].get_text(strip=True) if duration_items else "N/A"
+        # Duration is typically the 3rd .row-1-item span (after location and stipend)
+        row_items = card.select(".row-1-item")
+        if len(row_items) >= 3:
+            duration_span = row_items[2].select_one("span")
+            duration = duration_span.get_text(strip=True) if duration_span else "N/A"
+        else:
+            duration = "N/A"
 
         # --- Stipend ---
         stipend_tag = card.select_one(".stipend, span.desktop-text")
