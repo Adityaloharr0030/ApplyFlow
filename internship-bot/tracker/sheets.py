@@ -35,6 +35,13 @@ _sheets_checked = False
 _cached_worksheet = None
 
 
+def reset_sheets_cache():
+    """Reset the sheets cache so the next pipeline run retries the connection."""
+    global _sheets_checked, _cached_worksheet
+    _sheets_checked = False
+    _cached_worksheet = None
+
+
 def _get_google_sheet():
     """
     Connect to Google Sheets using service account credentials.

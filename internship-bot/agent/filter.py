@@ -19,30 +19,10 @@ logger = logging.getLogger(__name__)
 API_CALL_DELAY = 4.0
 MAX_RETRIES = 2
 
-# Track if Gemini failed so we stop retrying for the rest of the run
-_gemini_disabled = False
+from agent.ai_client import get_ai_response
 
-
-def _get_client():
-    """
-    Configure and return a Gemini client instance.
-    Returns None if the API key is missing or Gemini was disabled this run.
-    """
-    global _gemini_disabled
-    if _gemini_disabled:
-        return None
-
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key or api_key == "your_gemini_key_here":
-        return None
-
-    try:
-        from google import genai as google_genai
-        client = google_genai.Client(api_key=api_key)
-        return client
-    except Exception as e:
-        logger.warning(f"[Filter] Could not initialize Gemini client: {e}")
-        return None
+# Track if AI failed so we stop retrying for the rest of the run
+_ai_disabled = False
 
 
 def _score_with_keywords(listing: dict, profile: dict) -> dict:
@@ -113,16 +93,29 @@ def _score_with_keywords(listing: dict, profile: dict) -> dict:
     return {"score": score, "reason": reason, "apply": apply_decision}
 
 
-def _score_with_ai(listing: dict, profile: dict, client) -> dict | None:
-    """
-    Score using Gemini AI. Returns None if the API call fails (triggers fallback).
-    """
-    global _gemini_disabled
+def _fetch_job_description(listing: dict) -> str:
+    """Fetch the full job description if not present."""
+    desc = listing.get('description', '')
+    # If description is too short, we could scrape the apply_url here. 
+    # For now, we rely on the snippet already scraped by the platform.
+    return desc
 
-    MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
-    prompt = f"""You are a career advisor. Score this internship/job match 1-10.
+
+def _score_with_ai(listing: dict, profile: dict) -> dict | None:
+    """
+    Score using unified AI client. Returns None if the API call fails.
+    """
+    global _ai_disabled
+    if _ai_disabled:
+        return None
+
+    desc = _fetch_job_description(listing)
+    
+    system_prompt = "You are a career advisor. Return ONLY JSON."
+    user_prompt = f"""Score this internship/job match 1-10.
 
 LISTING: {listing.get('title', 'N/A')} at {listing.get('company', 'N/A')} ({listing.get('location', 'N/A')})
+DESCRIPTION: {desc[:1500]}
 CANDIDATE SKILLS: {', '.join(profile.get('skills', []))}
 CANDIDATE KEYWORDS: {', '.join(profile.get('keywords', []))}
 LOCATION PREFERENCES: {', '.join(profile.get('location_preferences', []))}
@@ -131,14 +124,11 @@ Respond ONLY with JSON: {{"score": <1-10>, "reason": "<short reason>", "apply": 
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            from google.genai import types as genai_types
-            response = client.models.generate_content(
-                model=MODEL,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(max_output_tokens=200)
-            )
-            text = response.text.strip()
+            text = get_ai_response(system_prompt, user_prompt, max_tokens=1024, response_format="json")
+            if not text:
+                return None
 
+            text = text.strip()
             # Strip markdown fences
             if text.startswith("```"):
                 lines = text.split("\n")
@@ -154,16 +144,14 @@ Respond ONLY with JSON: {{"score": <1-10>, "reason": "<short reason>", "apply": 
 
         except Exception as e:
             err_str = str(e).lower()
-            if "429" in str(e) or "quota" in err_str or "rate" in err_str or "resource_exhausted" in err_str:
+            if "429" in err_str or "quota" in err_str or "rate" in err_str or "resource_exhausted" in err_str:
                 if attempt < MAX_RETRIES:
                     wait = 8 * (2 ** attempt)
                     logger.info(f"  [Retry {attempt}/{MAX_RETRIES}] Rate limited, waiting {wait}s...")
                     time.sleep(wait)
                 else:
-                    logger.warning(
-                        "[Filter] Gemini quota exhausted -- switching to local keyword scoring"
-                    )
-                    _gemini_disabled = True
+                    logger.warning("[Filter] AI quota exhausted -- switching to local keyword scoring")
+                    _ai_disabled = True
                     return None
             else:
                 logger.debug(f"  AI scoring error: {e}")
@@ -180,9 +168,8 @@ def score_listing(listing: dict, profile: dict) -> dict:
 
     try:
         # Try AI scoring first
-        client = _get_client()
-        if client:
-            ai_result = _score_with_ai(listing, profile, client)
+        if not _ai_disabled:
+            ai_result = _score_with_ai(listing, profile)
             if ai_result:
                 status = "YES" if ai_result["apply"] else "SKIP"
                 logger.info(
@@ -210,8 +197,10 @@ def filter_listings(listings: list[dict], profile: dict) -> list[dict]:
     Score all listings and return only those worth applying to (score >= 5).
     Uses AI if available, otherwise falls back to local keyword matching.
     """
-    client = _get_client()
-    mode = "Gemini AI" if client else "local keyword matching (no API)"
+    global _ai_disabled
+    _ai_disabled = False  # Reset per pipeline run (fixes silent degradation across scheduler runs)
+
+    mode = "local keyword matching (AI disabled)" if _ai_disabled else "AI scoring"
     logger.info(f"[Filter] Scoring {len(listings)} listing(s) with {mode}...")
 
     approved: list[dict] = []
@@ -233,8 +222,8 @@ def filter_listings(listings: list[dict], profile: dict) -> list[dict]:
             listing["reason"] = result["reason"]
             approved.append(listing)
 
-        # Delay between API calls (only if using Gemini)
-        if not _gemini_disabled and client:
+        # Delay between API calls (only if using AI)
+        if not _ai_disabled:
             time.sleep(API_CALL_DELAY)
 
     logger.info(

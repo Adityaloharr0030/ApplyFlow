@@ -28,12 +28,13 @@ from platforms.generic_web import GenericWebPlatform
 
 from agent.filter import filter_listings
 from agent.cover_note import generate_cover_note
-from tracker.sheets import log_application, get_applied_urls
-from notifier.telegram import send_summary as telegram_summary, send_instant as telegram_instant
+from tracker.sheets import log_application, get_applied_urls, reset_sheets_cache
+from notifier.telegram import send_summary as telegram_summary, send_instant as telegram_instant, send_document as telegram_document
 from notifier.push import send_summary as ntfy_summary, send_instant as ntfy_instant
 from notifier.whatsapp import send_summary as whatsapp_summary, send_instant as whatsapp_instant
 from utils.dedup import deduplicate
 from utils.browser import create_driver
+from agent.interview_prep import generate_interview_prep
 
 # ─── Constants ───
 PROFILE_PATH = Path("./data/profile.json")
@@ -93,6 +94,13 @@ def load_profile() -> dict:
     else:
         logging.getLogger("main").warning(
             "⚠️  No resume_path set in profile.json — resume uploads will fail."
+        )
+
+    # Validate email isn't a placeholder
+    email = profile.get("email", "")
+    if email == "youremail@example.com" or not email:
+        logging.getLogger("main").warning(
+            "⚠️  Email in profile.json is a placeholder or empty! Cold emails/logins may fail."
         )
 
     return profile
@@ -157,6 +165,7 @@ def send_summary(applied: list, skipped: int, errors: int, manual: list = None):
         manual = []
     try:
         telegram_summary(applied, skipped, errors, manual)
+        telegram_document("logs/applications.csv")
     except Exception as e:
         logger.error(f"  ✗ Telegram notification failed: {e}")
         
@@ -177,6 +186,9 @@ def run_pipeline():
     logger.info("🤖 INTERNSHIP AUTOMATION BOT — Starting pipeline")
     logger.info(f"📅 Date: {datetime.now().strftime('%A, %d %B %Y at %H:%M')}")
     logger.info("=" * 60)
+    
+    # Reset sheets cache so we re-try the connection if it failed previously
+    reset_sheets_cache()
 
     profile = load_profile()
     validate_env(logger)
@@ -335,6 +347,11 @@ def run_pipeline():
                         status = "Applied"
                         platform_applied_counts[source_name] += 1
                         fire_instant_notification(source_name, listing)
+                        # Generate interview prep asynchronously or in background
+                        try:
+                            generate_interview_prep(listing, profile)
+                        except Exception as prep_e:
+                            logger.error(f"  ✗ Interview prep generation failed: {prep_e}")
                     logger.info(f"  ✅ {result.get('message')}")
                 else:
                     status = f"Error: {result.get('message')}"

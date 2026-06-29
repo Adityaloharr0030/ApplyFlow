@@ -43,7 +43,60 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     if chat_id != ALLOWED_CHAT_ID:
         return
-    await update.message.reply_text("👋 Hello! I am your ApplyFlow controller.\n\nSend /run to start the internship application scraper.")
+    await update.message.reply_text("👋 Hello! I am your ApplyFlow controller.\n\nSend /run to start the internship application scraper, or /help to see all commands.")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for the /help command."""
+    chat_id = str(update.effective_chat.id)
+    if chat_id != ALLOWED_CHAT_ID:
+        return
+    help_text = (
+        "🤖 **ApplyFlow Bot Commands**\n\n"
+        "▶️ /run - Start the background application scraper\n"
+        "📊 /stats - Get current application statistics\n"
+        "🏓 /ping - Check if the Telegram listener is online\n"
+        "❓ /help - Show this message"
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for the /ping command."""
+    chat_id = str(update.effective_chat.id)
+    if chat_id != ALLOWED_CHAT_ID:
+        return
+    await update.message.reply_text("🏓 Pong! The ApplyFlow Telegram listener is online and ready.")
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for the /stats command."""
+    chat_id = str(update.effective_chat.id)
+    if chat_id != ALLOWED_CHAT_ID:
+        return
+    
+    csv_path = "logs/applications.csv"
+    if not os.path.exists(csv_path):
+        await update.message.reply_text("📉 No statistics available yet (`logs/applications.csv` not found).")
+        return
+    
+    try:
+        with open(csv_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        
+        total = max(0, len(lines) - 1)
+        applied = sum(1 for l in lines if ",Applied," in l)
+        errors = sum(1 for l in lines if ",Error" in l)
+        pending = sum(1 for l in lines if ",Pending" in l)
+        
+        stats_text = (
+            "📊 **ApplyFlow Current Statistics**\n\n"
+            f"✅ **Applied:** {applied}\n"
+            f"❌ **Errors:** {errors}\n"
+            f"⏳ **Pending/Skipped:** {pending}\n"
+            f"📝 **Total Listings Processed:** {total}"
+        )
+        await update.message.reply_text(stats_text, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Failed to read stats: {e}")
+        await update.message.reply_text(f"❌ Could not read statistics: {e}")
 
 if __name__ == "__main__":
     if not BOT_TOKEN or not ALLOWED_CHAT_ID or BOT_TOKEN == "your_bot_token_here":
@@ -55,6 +108,9 @@ if __name__ == "__main__":
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("run", run_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("ping", ping_command))
+    app.add_handler(CommandHandler("stats", stats_command))
 
     print("Telegram Listener is now running! Send /run in Telegram to start the bot.")
     app.run_polling()

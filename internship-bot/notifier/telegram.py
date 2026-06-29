@@ -51,6 +51,34 @@ def send_instant(message: str):
         return
     _send_message_requests(bot_token, chat_id, message)
 
+def send_document(file_path: str):
+    """
+    Send a document (e.g. CSV/Excel file) to Telegram.
+    """
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not bot_token or not chat_id or bot_token == "your_bot_token_here" or chat_id == "your_chat_id_here":
+        return
+    
+    if not os.path.exists(file_path):
+        logger.warning(f"[Telegram] Document not found: {file_path}")
+        return
+
+    try:
+        import requests
+        url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+        payload = {"chat_id": chat_id}
+        with open(file_path, "rb") as f:
+            files = {"document": f}
+            resp = requests.post(url, data=payload, files=files, timeout=30)
+            
+        if resp.status_code == 200:
+            logger.info(f"[Telegram] ✅ Document {os.path.basename(file_path)} sent successfully")
+        else:
+            logger.warning(f"[Telegram] ✗ Failed to send document: {resp.text[:200]}")
+    except Exception as e:
+        logger.warning(f"[Telegram] ✗ Error sending document: {e}")
+
 def send_summary(applied: list[dict], skipped: int, errors: int, manual: list[dict] = None):
     """
     Send a daily summary report to Telegram.

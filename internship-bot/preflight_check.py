@@ -52,21 +52,43 @@ def main():
     # ═══════════════════════════════════════════════════════════
     # 2. GEMINI AI API KEY
     # ═══════════════════════════════════════════════════════════
-    print("\n--- 2. Gemini AI (Brain) ---")
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    check("GEMINI_API_KEY is set", bool(api_key) and api_key != "your_gemini_key_here",
-          "Missing or placeholder API key")
+    print("\n--- 2. AI Brain (Anthropic / Gemini) ---")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
 
-    if api_key and api_key != "your_gemini_key_here":
+    has_anthropic = bool(anthropic_key) and anthropic_key != "your_key_here"
+    has_gemini = bool(gemini_key) and gemini_key != "your_gemini_key_here"
+
+    check("ANTHROPIC_API_KEY is set", has_anthropic, "Missing Claude API key (optional)", warn=True)
+    check("GEMINI_API_KEY is set", has_gemini, "Missing Gemini API key", warn=not has_anthropic)
+
+    if not has_anthropic and not has_gemini:
+        check("Any AI API Key", False, "No valid AI keys found. Bot will use local keyword scoring.", warn=True)
+
+    if has_anthropic:
+        try:
+            from anthropic import Anthropic
+            client = Anthropic(api_key=anthropic_key)
+            msg = client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=10,
+                messages=[{"role": "user", "content": "Say hello in one word."}]
+            )
+            resp_text = msg.content[0].text.strip()
+            check("Anthropic API responds", True)
+            print(f"{INFO} Claude replied: \"{resp_text}\"")
+        except Exception as e:
+            check("Anthropic API connection", False, f"Error: {e}", warn=True)
+    elif has_gemini:
         try:
             from google import genai as google_genai
             from google.genai import types as genai_types
-            client = google_genai.Client(api_key=api_key)
+            client = google_genai.Client(api_key=gemini_key)
             model = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
             response = client.models.generate_content(
                 model=model,
                 contents="Say hello in one word.",
-                config=genai_types.GenerateContentConfig(max_output_tokens=20)
+                config=genai_types.GenerateContentConfig(max_output_tokens=256)
             )
             resp_text = ""
             try:
@@ -181,6 +203,7 @@ def main():
         "requests": "requests",
         "bs4": "beautifulsoup4",
         "google.genai": "google-genai",
+        "anthropic": "anthropic",
     }
     optional_packages = {
         "jobspy": "python-jobspy",
@@ -295,6 +318,12 @@ def main():
         check("AI Form Filler (agent/form_filler.py)", True)
     except Exception as e:
         check("AI Form Filler (agent/form_filler.py)", False, str(e))
+
+    try:
+        from agent.interview_prep import generate_interview_prep
+        check("AI Interview Prep (agent/interview_prep.py)", True)
+    except Exception as e:
+        check("AI Interview Prep (agent/interview_prep.py)", False, str(e))
 
     # ═══════════════════════════════════════════════════════════
     # 10. LOG FILES & TRACKER

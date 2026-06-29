@@ -27,18 +27,7 @@ Best regards,
 {name}"""
 
 
-def _get_client():
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key or api_key == "your_gemini_key_here":
-        return None
-
-    try:
-        from google import genai as google_genai
-        client = google_genai.Client(api_key=api_key)
-        return client
-    except Exception as e:
-        logger.warning(f"[CoverNote] Could not initialize Gemini client: {e}")
-        return None
+from agent.ai_client import get_ai_response
 
 
 def generate_cover_note(listing: dict, profile: dict) -> str:
@@ -48,10 +37,8 @@ def generate_cover_note(listing: dict, profile: dict) -> str:
     title = listing.get("title", "Software Engineering")
     company = listing.get("company", "your company")
 
-    client = _get_client()
-    if client:
-        MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
-        prompt = f"""Write a short, professional cover letter for the following internship.
+    system_prompt = "You are a professional cover letter writer."
+    user_prompt = f"""Write a short, professional cover letter for the following internship.
 
 INTERNSHIP: {title} at {company}
 
@@ -66,25 +53,19 @@ RULES:
 3. Do not include placeholder brackets like [Address] or [Date].
 4. Output ONLY the letter text. No markdown formatting.
 """
-        from google.genai import types as genai_types
-        for attempt in range(1, 3):
-            try:
-                response = client.models.generate_content(
-                    model=MODEL,
-                    contents=prompt,
-                    config=genai_types.GenerateContentConfig(max_output_tokens=300)
-                )
-                text = response.text.strip()
-                if text:
-                    return text
-            except Exception as e:
-                err_str = str(e).lower()
-                if "429" in err_str or "quota" in err_str or "rate" in err_str:
-                    logger.debug("[CoverNote] Quota exhausted -- falling back to local template")
-                    break  # Stop retrying on quota errors
-                else:
-                    logger.warning(f"[CoverNote] Gemini error: {e}")
-                    time.sleep(2)
+    for attempt in range(1, 3):
+        try:
+            text = get_ai_response(system_prompt, user_prompt, max_tokens=1024, response_format="text")
+            if text:
+                return text.strip()
+        except Exception as e:
+            err_str = str(e).lower()
+            if "429" in err_str or "quota" in err_str or "rate" in err_str or "resource_exhausted" in err_str:
+                logger.debug("[CoverNote] Quota exhausted -- falling back to local template")
+                break  # Stop retrying on quota errors
+            else:
+                logger.warning(f"[CoverNote] AI error: {e}")
+                time.sleep(2)
 
     # --- Local Fallback ---
     logger.info("  [CoverNote] Using local offline template")

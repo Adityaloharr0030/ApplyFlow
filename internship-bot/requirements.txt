@@ -14,9 +14,10 @@ python-jobspy>=1.1.0
 selenium>=4.21.0
 undetected-chromedriver>=3.5.5
 
-# --- AI (Google Gemini) ---
+# --- AI (Google Gemini & Anthropic Claude) ---
 # NOTE: google-generativeai is DEPRECATED — use google-genai
 google-genai>=1.0.0
+anthropic>=0.25.0
 
 # --- Google Sheets Logging ---
 gspread>=6.2.0

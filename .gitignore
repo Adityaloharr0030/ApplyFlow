@@ -16,6 +16,7 @@ build/
 # ─── Logs & Screenshots ───
 logs/
 *.log
+bot_chrome_profile/
 
 # ─── Virtual Environment ───
 venv/
