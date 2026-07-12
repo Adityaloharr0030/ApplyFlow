@@ -1,184 +1,291 @@
-import streamlit as st
-import pandas as pd
-from pathlib import Path
 import os
-import plotly.express as px
+import sys
+import time
+import subprocess
+import asyncio
+from pathlib import Path
 
-# --- Page Config ---
-st.set_page_config(
-    page_title="Internship Bot Dashboard",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded",
+import pandas as pd
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+app = FastAPI(title="ApplyFlow Dashboard API")
+
+# Allow CORS for the Vite frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# --- Custom CSS for Aesthetics ---
-st.markdown("""
-<style>
-    .main {
-        background-color: #0e1117;
-    }
-    h1, h2, h3 {
-        color: #00ffcc;
-        font-family: 'Inter', sans-serif;
-    }
-    .metric-card {
-        background-color: #1e2530;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        text-align: center;
-        border-left: 5px solid #00ffcc;
-    }
-    .metric-value {
-        font-size: 36px;
-        font-weight: bold;
-        color: white;
-    }
-    .metric-label {
-        color: #a0aab2;
-        font-size: 14px;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# --- Data Loading ---
 BASE_DIR = Path(__file__).resolve().parent
-CSV_PATH = BASE_DIR / "logs" / "applications.csv"
+LOGS_DIR = BASE_DIR / "logs"
+CSV_PATH = LOGS_DIR / "applications.csv"
 
-@st.cache_data(ttl=60) # Refresh data every minute
-def load_data():
+# Track the currently running bot process
+_bot_process: subprocess.Popen | None = None
+
+
+# ──────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────
+
+def load_data() -> pd.DataFrame:
     if not CSV_PATH.exists():
         return pd.DataFrame()
-    
+
     try:
         df = pd.read_csv(CSV_PATH)
-        # Ensure we have the right columns even if the file is empty or malformed
-        expected_cols = ["Date", "Company", "Role", "Location", "Source", "Status", "Score", "Apply URL", "Cover Note Preview"]
+        expected_cols = ["Date", "Company", "Role", "Location", "Source",
+                         "Status", "Score", "Apply URL", "Cover Note Preview"]
         for col in expected_cols:
             if col not in df.columns:
                 df[col] = ""
-        
-        # Sort by most recent
         df = df.sort_values(by="Date", ascending=False).reset_index(drop=True)
         return df
     except Exception as e:
-        st.error(f"Error loading data: {e}")
+        print(f"Error loading data: {e}")
         return pd.DataFrame()
 
-df = load_data()
 
-# --- Sidebar ---
-st.sidebar.title("🤖 Internship Bot")
-st.sidebar.markdown("Automated scouting & applying.")
+def get_latest_log_file() -> Path | None:
+    log_files = list(LOGS_DIR.glob("run_*.log"))
+    if not log_files:
+        return None
+    return max(log_files, key=os.path.getctime)
 
-if st.sidebar.button("🔄 Refresh Data"):
-    st.cache_data.clear()
-    st.rerun()
 
-st.sidebar.markdown("---")
-if st.sidebar.button("▶️ Run Bot Now (Dry Run)"):
-    import subprocess
-    st.sidebar.info("Starting bot in background...")
-    subprocess.Popen(["python", "main.py", "--run-now", "--dry-run"], cwd=str(BASE_DIR))
+def _spawn_bot(cmd: list[str], headless: bool) -> subprocess.Popen:
+    """
+    Spawn the bot subprocess.
+    - headless=False → Chrome opens visibly on screen (CREATE_NEW_CONSOLE on Windows).
+    - headless=True  → silent background process.
+    """
+    env = os.environ.copy()
+    env["HEADLESS"] = "false" if not headless else "true"
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("Filter Results")
+    kwargs: dict = {"cwd": str(BASE_DIR), "env": env}
 
-if not df.empty:
-    sources = ["All"] + list(df["Source"].dropna().unique())
-    selected_source = st.sidebar.selectbox("Filter by Source", sources)
+    if not headless and sys.platform == "win32":
+        # CREATE_NEW_CONSOLE (0x10) gives the subprocess its own console window
+        # and ensures Chrome's window is shown on the desktop.
+        kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
 
-    statuses = ["All"] + list(df["Status"].dropna().unique())
-    selected_status = st.sidebar.selectbox("Filter by Status", statuses)
-else:
-    selected_source = "All"
-    selected_status = "All"
+    return subprocess.Popen(cmd, **kwargs)
 
-# --- Main Dashboard ---
-st.title("🚀 Automated Applications Dashboard")
-st.markdown("Track the internships your bot has found and applied to.")
 
-if df.empty:
-    st.info("Waiting for the bot to log its first applications... Check back in a few minutes once the bot finishes running!")
-    st.stop()
+# ──────────────────────────────────────────────────────────────
+# /api/applications  — full application list + metrics
+# ──────────────────────────────────────────────────────────────
 
-# Filter data
-filtered_df = df.copy()
-if selected_source != "All":
-    filtered_df = filtered_df[filtered_df["Source"] == selected_source]
-if selected_status != "All":
-    filtered_df = filtered_df[filtered_df["Status"] == selected_status]
+@app.get("/api/applications")
+def get_applications():
+    """Returns all applications and aggregated metrics."""
+    df = load_data()
 
-# --- Metrics ---
-col1, col2, col3, col4 = st.columns(4)
+    empty_response = {
+        "metrics": {
+            "total": 0, "applied": 0, "failed": 0,
+            "manual": 0, "skipped": 0, "average_score": 0.0
+        },
+        "applications": []
+    }
 
-with col1:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-value">{len(df)}</div>
-        <div class="metric-label">Total Logs</div>
-    </div>
-    """, unsafe_allow_html=True)
+    if df.empty:
+        return empty_response
 
-with col2:
-    applied_count = len(df[df["Status"].astype(str).str.contains("Applied|Pending", case=False, na=False)])
-    st.markdown(f"""
-    <div class="metric-card" style="border-left-color: #00ccff;">
-        <div class="metric-value">{applied_count}</div>
-        <div class="metric-label">Successful Applications</div>
-    </div>
-    """, unsafe_allow_html=True)
+    scores = pd.to_numeric(df["Score"], errors="coerce")
+    avg_score = float(scores.mean()) if not scores.isna().all() else 0.0
 
-with col3:
-    skipped_count = len(df[df["Status"].astype(str).str.contains("Skipped", case=False, na=False)])
-    st.markdown(f"""
-    <div class="metric-card" style="border-left-color: #ff9900;">
-        <div class="metric-value">{skipped_count}</div>
-        <div class="metric-label">Skipped (Duplicate/Low Score)</div>
-    </div>
-    """, unsafe_allow_html=True)
+    metrics = {
+        "total": len(df),
+        "applied": int(df["Status"].str.contains("Applied|Success", case=False, na=False).sum()),
+        "failed": int(df["Status"].str.contains("Error|Failed", case=False, na=False).sum()),
+        "manual": int(df["Status"].str.contains("Manual|Pending", case=False, na=False).sum()),
+        "skipped": int(df["Status"].str.contains("Skipped|Dry Run", case=False, na=False).sum()),
+        "average_score": round(avg_score, 1),
+    }
 
-with col4:
-    error_count = len(df[df["Status"].astype(str).str.contains("Error", case=False, na=False)])
-    st.markdown(f"""
-    <div class="metric-card" style="border-left-color: #ff3333;">
-        <div class="metric-value">{error_count}</div>
-        <div class="metric-label">Application Errors</div>
-    </div>
-    """, unsafe_allow_html=True)
+    applications = df.where(pd.notnull(df), None).to_dict(orient="records")
+    return {"metrics": metrics, "applications": applications}
 
-st.markdown("<br>", unsafe_allow_html=True)
 
-# --- Success Rate Chart ---
-if not filtered_df.empty:
-    st.subheader("📊 Application Success Rate")
-    status_counts = filtered_df["Status"].value_counts().reset_index()
-    status_counts.columns = ["Status", "Count"]
-    fig = px.pie(status_counts, values="Count", names="Status", hole=0.4,
-                 color_discrete_sequence=px.colors.qualitative.Pastel)
-    st.plotly_chart(fig, use_container_width=True)
+# ──────────────────────────────────────────────────────────────
+# /api/stats  — lightweight summary for stat cards
+# ──────────────────────────────────────────────────────────────
 
-st.markdown("<br>", unsafe_allow_html=True)
+@app.get("/api/stats")
+def get_stats():
+    """Lightweight summary: total applied and per-platform breakdown."""
+    df = load_data()
 
-# --- Data Table ---
-st.subheader(f"📋 Application Log ({len(filtered_df)} items)")
+    if df.empty:
+        return {"total_applied": 0, "platforms": {}, "recent": []}
 
-# Make the dataframe look nicer in the UI
-display_df = filtered_df.copy()
+    applied_df = df[df["Status"].str.contains("Applied|Success", case=False, na=False)]
 
-# Make URLs clickable if they exist
-if "Apply URL" in display_df.columns:
-    display_df["Apply URL"] = display_df["Apply URL"].apply(
-        lambda x: f'<a href="{x}" target="_blank">View Job</a>' if pd.notna(x) and str(x).startswith('http') else x
+    platforms = {}
+    if "Source" in applied_df.columns:
+        platforms = (
+            applied_df["Source"]
+            .str.strip()
+            .str.title()
+            .value_counts()
+            .to_dict()
+        )
+
+    recent = df.head(5).where(pd.notnull(df.head(5)), None).to_dict(orient="records")
+
+    return {
+        "total_applied": len(applied_df),
+        "platforms": platforms,
+        "recent": recent,
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+# /api/logs  — last 100 lines (polled)
+# /api/logs/stream — Server-Sent Events live tail
+# ──────────────────────────────────────────────────────────────
+
+@app.get("/api/logs")
+def get_logs():
+    """Return the last 100 lines of the most recent run log."""
+    latest = get_latest_log_file()
+    if not latest:
+        return {"logs": ["No logs found. Run the bot first."]}
+
+    try:
+        with open(latest, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()[-100:]
+        return {"logs": [l.rstrip("\n") for l in lines]}
+    except Exception as e:
+        return {"logs": [f"Error reading logs: {e}"]}
+
+
+@app.get("/api/logs/stream")
+async def stream_logs():
+    """
+    Server-Sent Events endpoint — streams new log lines in real time.
+    The frontend connects with EventSource('/api/logs/stream') and receives
+    'data: <line>\\n\\n' events as the bot writes to its log file.
+    """
+    async def event_generator():
+        # Wait up to 5s for a log file to appear (bot may have just started)
+        for _ in range(10):
+            log_file = get_latest_log_file()
+            if log_file:
+                break
+            await asyncio.sleep(0.5)
+        else:
+            yield "data: [Waiting for bot to start...]\n\n"
+            return
+
+        try:
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                # Send last 50 lines as history first
+                history = f.readlines()[-50:]
+                for line in history:
+                    yield f"data: {line.rstrip()}\n\n"
+
+                # Then tail new lines
+                while True:
+                    line = f.readline()
+                    if line:
+                        yield f"data: {line.rstrip()}\n\n"
+                    else:
+                        # Heartbeat every 1s to keep connection alive
+                        await asyncio.sleep(1)
+                        yield ": heartbeat\n\n"
+        except Exception as e:
+            yield f"data: [Stream error: {e}]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx buffering if proxied
+        },
     )
 
-st.write(
-    display_df.to_html(escape=False, index=False), 
-    unsafe_allow_html=True
-)
 
-st.markdown("<br><hr>", unsafe_allow_html=True)
-st.caption("Dashboard auto-refreshes every 60 seconds. Powered by Streamlit & your custom Python Bot.")
+# ──────────────────────────────────────────────────────────────
+# /api/status — bot running check
+# ──────────────────────────────────────────────────────────────
+
+@app.get("/api/status")
+def get_status():
+    """Check if the bot process is currently running."""
+    global _bot_process
+    is_running = _bot_process is not None and _bot_process.poll() is None
+    return {"running": is_running}
+
+
+# ──────────────────────────────────────────────────────────────
+# /api/run-bot  — trigger bot (frontend/App.tsx)
+# /api/start    — trigger bot (dashboard/frontend)
+# ──────────────────────────────────────────────────────────────
+
+class RunBotRequest(BaseModel):
+    dry_run: bool = False
+    headless: bool = True   # False = Chrome opens visibly on screen
+
+
+@app.post("/api/run-bot")
+def run_bot(req: RunBotRequest = RunBotRequest()):
+    """Trigger the bot to run in the background."""
+    global _bot_process
+
+    # Prevent double-start
+    if _bot_process is not None and _bot_process.poll() is None:
+        return {"status": "already_running", "message": "Bot is already running"}
+
+    cmd = ["python", "main.py", "--run-now"]
+    if req.dry_run:
+        cmd.append("--dry-run")
+
+    try:
+        _bot_process = _spawn_bot(cmd, headless=req.headless)
+        return {
+            "status": "success",
+            "message": "Bot started in background",
+            "pid": _bot_process.pid,
+            "headless": req.headless,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/start")
+def start_bot():
+    """Alias for /api/run-bot — for dashboard/frontend compatibility. Always shows browser."""
+    global _bot_process
+
+    if _bot_process is not None and _bot_process.poll() is None:
+        return {"message": "Bot is already running."}
+
+    _bot_process = _spawn_bot(["python", "main.py", "--run-now"], headless=False)
+    return {"message": "Bot started in the background.", "pid": _bot_process.pid}
+
+
+# ──────────────────────────────────────────────────────────────
+# /api/health  — simple health check
+# ──────────────────────────────────────────────────────────────
+
+@app.get("/api/health")
+def health():
+    return {
+        "status": "ok",
+        "csv_exists": CSV_PATH.exists(),
+        "logs_dir": str(LOGS_DIR),
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("dashboard:app", host="0.0.0.0", port=8000, reload=True)

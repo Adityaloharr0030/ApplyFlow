@@ -83,68 +83,184 @@ class LinkedInPlatform(Platform):
                 logger.info(f"  [DRY RUN] Would apply to {listing.get('title')} @ {listing.get('company')}")
                 return {"success": True, "message": "Dry run — not submitted"}
 
+            from utils.human_sim import human_click, random_idle, simulate_page_read
+            from agent.form_filler import fill_form_fields, answer_question
+
             apply_url = listing.get("apply_url", "")
             logger.info(f"[LinkedIn] Navigating to: {apply_url}")
             driver.get(apply_url)
-            time.sleep(random.uniform(3.0, 5.0))
+            random_idle(3.0, 5.0)
 
             # Circuit breaker trigger for LinkedIn restricts
             if "login" in driver.current_url.lower() and "captcha" in driver.page_source.lower():
                 self.record_captcha()
                 return {"success": False, "message": "Hit CAPTCHA / Login wall"}
 
+            # Check if redirected to login page (not authenticated)
+            current_url = driver.current_url.lower()
+            if "login" in current_url or "authwall" in current_url or "signup" in current_url:
+                logger.warning("[LinkedIn] Not logged in — redirected to login/authwall")
+                return {"success": False, "message": "Not logged in — login required"}
+
+            # ── Find and click Easy Apply button ───────────────────────────
+            easy_apply_clicked = False
             try:
                 easy_apply_btn = driver.find_element("css selector", "button.jobs-apply-button")
-                easy_apply_btn.click()
+                human_click(driver, easy_apply_btn)
+                easy_apply_clicked = True
                 logger.info("  ✓ Clicked Easy Apply button")
-                time.sleep(random.uniform(2.0, 3.0))
+                random_idle(2.0, 3.0)
             except Exception:
-                logger.warning("[LinkedIn] Could not find Easy Apply button. Skipping to Manual.")
+                logger.warning("[LinkedIn] Could not find Easy Apply button. Trying text-based fallback...")
+
+                # Fallback: search for visible elements containing "Easy Apply"
+                try:
+                    xpath = "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'easy apply')]"
+                    candidates = driver.find_elements("xpath", xpath)
+                    for el in candidates:
+                        try:
+                            tag = el.tag_name.lower()
+                            target = None
+                            if tag in ("a", "button"):
+                                target = el
+                            else:
+                                for ancestor_xpath in ["ancestor::button[1]", "ancestor::a[1]", "ancestor::*[@role='button'][1]"]:
+                                    try:
+                                        target = el.find_element("xpath", ancestor_xpath)
+                                        break
+                                    except Exception:
+                                        continue
+
+                            if target:
+                                human_click(driver, target)
+                                easy_apply_clicked = True
+                                logger.info("  ✓ Clicked Easy Apply via fallback selector")
+                                random_idle(2.0, 3.0)
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+            if not easy_apply_clicked:
                 return {"success": False, "message": "No Easy Apply button found (Manual apply required)"}
 
-            # Simple linear loop to get through the form
-            max_steps = 5
+            # ── Multi-step form loop with smart filling ────────────────────
+            max_steps = 8
             for step in range(max_steps):
+                random_idle(1.5, 3.0)
+
                 try:
+                    # ── Fill form fields at this step ──────────────────────
+                    filled = fill_form_fields(driver, profile)
+                    if filled > 0:
+                        logger.info(f"  [Step {step+1}] Filled {filled} field(s)")
+
+                    # ── Handle resume upload ───────────────────────────────
+                    try:
+                        file_inputs = driver.find_elements("css selector", "input[type='file']")
+                        resume_path = profile.get("resume_path", "")
+                        if file_inputs and resume_path:
+                            import os.path
+                            abs_path = os.path.abspath(resume_path)
+                            if os.path.exists(abs_path):
+                                for fi in file_inputs:
+                                    try:
+                                        fi.send_keys(abs_path)
+                                        logger.info("  ✓ Uploaded resume")
+                                        random_idle(1.0, 2.0)
+                                        break
+                                    except Exception:
+                                        continue
+                    except Exception:
+                        pass
+
+                    # ── Handle textarea questions (cover letter, additional) ─
+                    try:
+                        textareas = driver.find_elements("css selector", "textarea")
+                        for ta in textareas:
+                            if ta.is_displayed() and not (ta.get_attribute("value") or "").strip():
+                                from agent.form_filler import _get_field_label
+                                label = _get_field_label(driver, ta)
+                                if label:
+                                    answer = answer_question(label, profile)
+                                else:
+                                    answer = cover_note[:500] if cover_note else "I am excited about this opportunity and believe my skills are a strong match."
+                                ta.send_keys(answer)
+                                logger.info(f"  ✓ Filled textarea: {(label or 'cover/additional')[:30]}")
+                                random_idle(0.5, 1.0)
+                    except Exception:
+                        pass
+
+                    # ── Check for error messages on this step ──────────────
+                    try:
+                        errors = driver.find_elements("css selector",
+                            ".artdeco-inline-feedback--error, .fb-dash-form-element__error-field, "
+                            "[data-test-form-element-error-text], .jobs-easy-apply-form-element__error"
+                        )
+                        visible_errors = [e for e in errors if e.is_displayed() and e.text.strip()]
+                        if visible_errors:
+                            logger.warning(f"  ⚠️ Form errors detected: {[e.text for e in visible_errors[:3]]}")
+                            # Try filling again with AI for errored fields
+                            fill_form_fields(driver, profile)
+                            random_idle(0.5, 1.0)
+                    except Exception:
+                        pass
+
+                    # ── Look for Submit / Review / Next buttons ─────────────
                     submit_btn = None
+                    next_btn = None
+                    review_btn = None
+
                     buttons = driver.find_elements("css selector", "button")
                     for btn in buttons:
-                        text = btn.text.lower()
-                        if "submit application" in text or "review" in text:
+                        if not btn.is_displayed() or not btn.is_enabled():
+                            continue
+                        text = btn.text.lower().strip()
+                        if "submit application" in text:
                             submit_btn = btn
-                            break
+                        elif "review" in text:
+                            review_btn = btn
+                        elif "next" in text:
+                            next_btn = btn
 
                     if submit_btn:
-                        submit_btn.click()
-                        logger.info("  ✓ Clicked Submit/Review")
-                        time.sleep(random.uniform(3.0, 5.0))
-                        
-                        # If it was review, click submit again
-                        for btn in driver.find_elements("css selector", "button"):
-                            if "submit application" in btn.text.lower():
-                                btn.click()
-                                logger.info("  ✓ Clicked Final Submit")
-                                time.sleep(random.uniform(3.0, 5.0))
-                                break
-                        
+                        human_click(driver, submit_btn)
+                        logger.info("  ✓ Clicked Submit Application")
+                        random_idle(3.0, 5.0)
                         self.captcha_count = 0
                         return {"success": True, "message": "LinkedIn Application submitted successfully"}
-                    
-                    next_btn = None
-                    for btn in buttons:
-                        if "next" in btn.text.lower():
-                            next_btn = btn
-                            break
-                    
+
+                    if review_btn:
+                        human_click(driver, review_btn)
+                        logger.info("  ✓ Clicked Review")
+                        random_idle(2.0, 4.0)
+
+                        # After review, look for final submit
+                        for btn in driver.find_elements("css selector", "button"):
+                            if btn.is_displayed() and "submit application" in btn.text.lower():
+                                human_click(driver, btn)
+                                logger.info("  ✓ Clicked Final Submit")
+                                random_idle(3.0, 5.0)
+                                self.captcha_count = 0
+                                return {"success": True, "message": "LinkedIn Application submitted successfully"}
+
                     if next_btn:
-                        next_btn.click()
+                        human_click(driver, next_btn)
                         logger.info(f"  ✓ Clicked Next (Step {step+1})")
-                        time.sleep(random.uniform(2.0, 3.0))
+                        random_idle(1.5, 3.0)
                     else:
-                        return {"success": False, "message": "Stuck on form (No Next or Submit found)"}
+                        if not submit_btn and not review_btn:
+                            # Check for dismiss/close (application might have been submitted)
+                            page_lower = driver.page_source.lower()
+                            if "application sent" in page_lower or "applied" in page_lower:
+                                self.captcha_count = 0
+                                return {"success": True, "message": "LinkedIn Application submitted successfully"}
+                            return {"success": False, "message": "Stuck on form (No Next or Submit found)"}
+
                 except Exception as e:
                     logger.debug(f"[LinkedIn] Step {step} failed: {e}")
-                    pass
+                    continue
 
             return {"success": False, "message": "Form too complex (exceeded max steps)"}
 

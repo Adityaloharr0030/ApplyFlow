@@ -25,6 +25,7 @@ from platforms.linkedin import LinkedInPlatform
 from platforms.indeed import IndeedPlatform
 from platforms.unstop import UnstopPlatform
 from platforms.generic_web import GenericWebPlatform
+from platforms.naukri import NaukriPlatform
 
 from agent.filter import filter_listings
 from agent.cover_note import generate_cover_note
@@ -35,6 +36,8 @@ from notifier.whatsapp import send_summary as whatsapp_summary, send_instant as 
 from utils.dedup import deduplicate
 from utils.browser import create_driver
 from agent.interview_prep import generate_interview_prep
+from platforms.login import LOGIN_HANDLERS
+from agent.resume_brain import get_resume_context
 
 # ─── Constants ───
 PROFILE_PATH = Path("./data/profile.json")
@@ -113,6 +116,7 @@ def validate_env(logger) -> None:
         ("GEMINI_API_KEY", "your_gemini_key_here", "AI scoring disabled — using local keyword matching"),
         ("INTERNSHALA_EMAIL", None, "Internshala auto-apply disabled"),
         ("LINKEDIN_EMAIL", None, "LinkedIn scraper disabled"),
+        ("NAUKRI_EMAIL", None, "Naukri auto-apply disabled"),
         ("TELEGRAM_BOT_TOKEN", "your_bot_token_here", "Telegram notifications disabled"),
         ("GMAIL_ADDRESS", None, "Cold email disabled"),
     ]
@@ -179,7 +183,7 @@ def send_summary(applied: list, skipped: int, errors: int, manual: list = None):
     except Exception as e:
         logger.error(f"  ✗ WhatsApp notification failed: {e}")
 
-def run_pipeline():
+def run_pipeline(platform_filter: str = None):
     logger = logging.getLogger("main")
 
     logger.info("=" * 60)
@@ -195,8 +199,35 @@ def run_pipeline():
     logger.info(f"👤 Candidate: {profile.get('name', 'Unknown')}")
     logger.info(f"🔑 Keywords: {', '.join(profile.get('keywords', []))}")
 
+    # 🧠 Initialize Resume Brain
+    logger.info("\n" + "━" * 50)
+    logger.info("🧠 STEP 0: Initializing AI Resume Brain…")
+    logger.info("━" * 50)
+    try:
+        resume_ctx = get_resume_context()
+        logger.info(f"  → Active Context: {resume_ctx.name}")
+        logger.info(f"  → Extracted Skills: {len(resume_ctx.skills)}")
+        logger.info(f"  → Extracted Projects: {len(resume_ctx.projects)}")
+        
+        # Sync profile.json
+        if resume_ctx.name:
+            profile["skills"] = resume_ctx.skills
+            profile["projects"] = [
+                f"{p.get('name')} ({', '.join(p.get('techs', []))})"
+                for p in resume_ctx.projects
+            ]
+            if resume_ctx.achievements:
+                profile["achievement"] = resume_ctx.achievements[0]
+            with open(PROFILE_PATH, "w", encoding="utf-8") as f:
+                json.dump(profile, f, indent=2, ensure_ascii=False)
+            logger.info("  → Synced profile.json with Resume Brain data")
+            
+    except Exception as e:
+        logger.error(f"  ✗ Resume Brain init failed: {e}")
+
     applied_listings: list[dict] = []
     manual_listings: list[dict] = []
+    dry_run_listings: list[dict] = []
     skipped_count = 0
     error_count = 0
 
@@ -205,6 +236,7 @@ def run_pipeline():
         "linkedin": LinkedInPlatform(),
         "indeed": IndeedPlatform(),
         "unstop": UnstopPlatform(),
+        "naukri": NaukriPlatform(),
         "generic_web": GenericWebPlatform(),
     }
 
@@ -214,6 +246,7 @@ def run_pipeline():
         "linkedin": int(os.getenv("LINKEDIN_MAX_APPLIES", "10")),
         "indeed": int(os.getenv("INDEED_MAX_APPLIES", "10")),
         "unstop": int(os.getenv("UNSTOP_MAX_APPLIES", "15")),
+        "naukri": int(os.getenv("NAUKRI_MAX_APPLIES", "15")),
         "generic_web": 20
     }
     platform_applied_counts = {k: 0 for k in platforms.keys()}
@@ -225,6 +258,9 @@ def run_pipeline():
 
     all_listings: list[dict] = []
     for name, platform in platforms.items():
+        # Skip platforms not matching the filter
+        if platform_filter and name != platform_filter:
+            continue
         try:
             logger.info(f"\n🔍 Scraping {name.capitalize()}…")
             results = platform.search(profile)
@@ -306,10 +342,40 @@ def run_pipeline():
         send_summary(applied_listings, skipped_count, error_count, manual_listings)
         return
     
+    # Login to platforms before applying
+    is_dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
+    logged_in_platforms: set[str] = set()
+
+    if not is_dry_run:
+        logger.info("\n🔐 Logging into platforms...")
+        for source_name in grouped.keys():
+            login_fn = LOGIN_HANDLERS.get(source_name)
+            if login_fn:
+                try:
+                    success = login_fn(driver)
+                    if success:
+                        logged_in_platforms.add(source_name)
+                    else:
+                        logger.warning(f"  ⚠️ Could not login to {source_name} — will skip its applications")
+                except Exception as e:
+                    logger.error(f"  ✗ Login to {source_name} crashed: {e}")
+            else:
+                # Platforms without login requirements (indeed, generic_web)
+                logged_in_platforms.add(source_name)
+    else:
+        # In dry run mode, mark all platforms as "logged in" (they won't actually apply)
+        logged_in_platforms = set(grouped.keys())
+
     try:
         for source_name, listings in grouped.items():
             platform = platforms.get(source_name)
             if not platform:
+                continue
+
+            # Skip platforms we couldn't log into (unless dry run)
+            if source_name not in logged_in_platforms:
+                logger.warning(f"  ⏭ Skipping {source_name} — not logged in")
+                skipped_count += len(listings)
                 continue
 
             for listing in listings:
@@ -339,9 +405,15 @@ def run_pipeline():
 
                 if result.get("success"):
                     msg = result.get("message", "").lower()
-                    if "manual" in msg or "pending" in msg:
+                    if "dry run" in msg:
+                        # DRY RUN: do NOT count as real application
+                        dry_run_listings.append(listing)
+                        status = "Dry Run"
+                        logger.info(f"  🧪 {result.get('message')}")
+                    elif "manual" in msg or "pending" in msg:
                         manual_listings.append(listing)
                         status = "Pending (Manual)"
+                        logger.info(f"  ✅ {result.get('message')}")
                     else:
                         applied_listings.append(listing)
                         status = "Applied"
@@ -352,7 +424,7 @@ def run_pipeline():
                             generate_interview_prep(listing, profile)
                         except Exception as prep_e:
                             logger.error(f"  ✗ Interview prep generation failed: {prep_e}")
-                    logger.info(f"  ✅ {result.get('message')}")
+                        logger.info(f"  ✅ {result.get('message')}")
                 else:
                     status = f"Error: {result.get('message')}"
                     error_count += 1
@@ -382,9 +454,97 @@ def run_pipeline():
     logger.info("\n" + "=" * 60)
     logger.info("🏁 PIPELINE COMPLETE")
     logger.info(f"  ✅ Applied: {len(applied_listings)}")
+    if dry_run_listings:
+        logger.info(f"  🧪 Dry Run: {len(dry_run_listings)} (not actually submitted)")
     logger.info(f"  ⏭  Skipped: {skipped_count}")
     logger.info(f"  ❌ Errors:  {error_count}")
     logger.info("=" * 60)
+
+def debug_single_apply():
+    """
+    Debug mode: test the entire apply flow on a specific Internshala URL.
+    Opens Chrome visually, takes screenshots at each step, and reports the result.
+    Usage: python main.py --debug-apply "https://internshala.com/internship/detail/..."
+    """
+    import sys
+    from agent.cover_note import generate_cover_note
+    from applicator.selenium_fill import apply_internshala
+
+    if len(sys.argv) > 2:
+        url = sys.argv[2]
+    else:
+        url = input("Enter Internshala listing URL: ").strip()
+
+    profile = load_profile()
+
+    listing = {
+        "title": "Debug Application",
+        "company": "Debug Corp",
+        "location": "Remote",
+        "apply_url": url,
+        "source": "internshala",
+        "stipend": "N/A",
+        "duration": "N/A",
+    }
+
+    print(f"\n🧪 DEBUG APPLY MODE")
+    print(f"   URL: {url}")
+    print(f"   Screenshots will be saved to: logs/screenshots/\n")
+
+    cover = generate_cover_note(listing, profile)
+    print(f"📝 Cover note preview (first 200 chars):\n{cover[:200]}...\n")
+
+    result = apply_internshala(listing, cover, profile)
+
+    print("\n" + "=" * 50)
+    icon = "✅" if result["success"] else "❌"
+    print(f"{icon} Result: {result['message']}")
+    print(f"\n📸 Check screenshots in: logs/screenshots/")
+    print("   Key screenshots to check:")
+    print("   - 3_FAIL_no_apply_button.png → Apply button selector broken")
+    print("   - 3_FAIL_login_wall.png      → Login session expired")
+    print("   - 5_FAIL_no_submit_button.png → Submit button not found")
+    print("   - 6_SUCCESS.png              → Application confirmed!")
+    print("   - 6_UNCERTAIN.png            → Submitted but unconfirmed")
+    print("=" * 50)
+
+
+def test_scoring():
+    """
+    Runs a few sample listings through the AI scorer (filter.py) and prints the results
+    without actually applying. Good for testing fine-tuned models.
+    """
+    import sys
+    from agent.filter import filter_listings
+
+    profile = load_profile()
+    
+    print("\n🧪 TESTING AI SCORER MODEL")
+    print(f"   Using SCORER MODEL: {os.getenv('TUNED_SCORER_MODEL', os.getenv('GEMINI_MODEL', 'gemini-1.5-flash'))}")
+    print("=" * 60)
+
+    samples = [
+        {"title": "Flutter Developer Intern", "company": "Groww", "description": "Looking for Flutter dev with Riverpod", "location": "Remote"},
+        {"title": "React Frontend Intern", "company": "Razorpay", "description": "React, Next.js experience required.", "location": "Bengaluru"},
+        {"title": "HR Intern", "company": "Big Corp", "description": "Help with recruiting and payroll", "location": "Remote"},
+        {"title": "Data Science Intern", "company": "Analytics Co", "description": "Python, Pandas, Machine Learning", "location": "Pune"},
+        {"title": "MERN Stack Developer", "company": "Startup", "description": "Node.js, Express, React, MongoDB", "location": "Remote"}
+    ]
+
+    for listing in samples:
+        print(f"\nEvaluating: {listing['title']} @ {listing['company']}...")
+        
+    # filter_listings will automatically print the scores to the logger
+    logger = logging.getLogger("main")
+    logger.setLevel(logging.INFO)
+    
+    approved = filter_listings(samples, profile)
+    
+    print("\n" + "=" * 60)
+    print(f"🏁 TEST COMPLETE. Approved {len(approved)} out of {len(samples)}.")
+    print("=" * 60)
+    sys.exit(0)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -392,7 +552,21 @@ def main():
     parser.add_argument("--time", type=str, default=SCHEDULE_TIME)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--test-notify", action="store_true", help="Send a test notification to all channels")
-    args = parser.parse_args()
+    parser.add_argument("--test-scoring", action="store_true", help="Test the AI scorer against 5 sample listings")
+    parser.add_argument("--debug-apply", action="store_true", help="Test apply flow on a single Internshala URL (pass URL as next arg)")
+    parser.add_argument("--platform", type=str, default=None, help="Run only a specific platform (e.g., naukri, linkedin, internshala)")
+    parser.add_argument("--schedule-file", type=str, default=None, help="Path to schedules.json for multi-platform scheduling")
+    args = parser.parse_known_args()[0]  # allow extra positional for URL
+
+    if args.debug_apply:
+        setup_logging()
+        debug_single_apply()
+        return
+
+    if args.test_scoring:
+        setup_logging()
+        test_scoring()
+        return
 
     if args.test_notify:
         logger = setup_logging()
@@ -427,13 +601,82 @@ def main():
 
     if args.run_now:
         logger.info("🚀 Running in one-shot mode (--run-now)")
-        run_pipeline()
+        run_pipeline(platform_filter=args.platform)
+    elif args.schedule_file:
+        # Multi-platform scheduled sessions from schedules.json
+        import schedule
+        import time as time_module
+        import json
+
+        schedule_path = args.schedule_file
+        logger.info(f"📅 Loading schedules from: {schedule_path}")
+
+        try:
+            with open(schedule_path, "r", encoding="utf-8") as f:
+                schedules = json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load schedules: {e}")
+            sys.exit(1)
+
+        day_map = {
+            "daily": lambda job: job,
+            "weekdays": lambda job: job.monday.at(job.at_time_str).do(job.job_func) if False else job,
+        }
+
+        for sched in schedules:
+            if sched.get("enabled", True) is False:
+                continue
+
+            plat = sched.get("platform", "all")
+            run_time = sched.get("time", "10:00")
+            days = sched.get("days", "daily").lower()
+
+            def make_job(p=plat):
+                return lambda: run_pipeline(platform_filter=p if p != "all" else None)
+
+            if days == "daily":
+                schedule.every().day.at(run_time).do(make_job())
+            elif days == "weekdays":
+                for day_fn in [schedule.every().monday, schedule.every().tuesday,
+                               schedule.every().wednesday, schedule.every().thursday,
+                               schedule.every().friday]:
+                    day_fn.at(run_time).do(make_job())
+            elif days == "weekends":
+                schedule.every().saturday.at(run_time).do(make_job())
+                schedule.every().sunday.at(run_time).do(make_job())
+            else:
+                # Custom days like "mon,wed,fri"
+                day_names = {
+                    "mon": schedule.every().monday,
+                    "tue": schedule.every().tuesday,
+                    "wed": schedule.every().wednesday,
+                    "thu": schedule.every().thursday,
+                    "fri": schedule.every().friday,
+                    "sat": schedule.every().saturday,
+                    "sun": schedule.every().sunday,
+                }
+                for day_str in days.split(","):
+                    day_str = day_str.strip().lower()[:3]
+                    if day_str in day_names:
+                        day_names[day_str].at(run_time).do(make_job())
+
+            logger.info(f"  ✓ Scheduled: {plat} at {run_time} ({days})")
+
+        logger.info(f"⏰ {len([s for s in schedules if s.get('enabled', True)])} schedule(s) active. Waiting...")
+
+        try:
+            while True:
+                schedule.run_pending()
+                time_module.sleep(30)
+        except KeyboardInterrupt:
+            logger.info("\n👋 Scheduler stopped by user. Goodbye!")
+            sys.exit(0)
     else:
         import schedule
         import time
 
         logger.info(f"⏰ Scheduling daily run at {args.time}")
-        schedule.every().day.at(args.time).do(run_pipeline)
+        schedule.every().day.at(args.time).do(lambda: run_pipeline(platform_filter=args.platform))
 
         try:
             while True:

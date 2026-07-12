@@ -3,7 +3,8 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-api_key = os.getenv("GEMINI_API_KEY", "")
+api_key_str = os.getenv("GEMINI_API_KEY", "")
+api_key = api_key_str.split(",")[0].strip() if api_key_str else ""
 print(f"API Key (first 10 chars): {api_key[:10]}...")
 print(f"API Key length: {len(api_key)}")
 

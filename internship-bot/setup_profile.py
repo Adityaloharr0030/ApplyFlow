@@ -33,3 +33,4 @@ else:
             # Exception means the user closed the window or driver quit
             print("\nBrowser closed. Dedicated profile is now ready to use!")
             break
+

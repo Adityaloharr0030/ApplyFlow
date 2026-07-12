@@ -2,26 +2,34 @@
   "name": "Aditya Lohar",
   "degree": "B.Tech Computer Engineering",
   "year": "2027",
-  "email": "aditya.actual@gmail.com",
-  "github": "https://github.com/Adityaloharr0030",
+  "college": "KBSCOE, Jalgaon (DBATU)",
+  "email": "adityalohar00030@gmail.com",
+  "github": "https://github.com/Adityaloharaa0030",
   "linkedin": "https://linkedin.com/in/aditya-lohar",
+  "location": "Jalgaon, Maharashtra",
   "skills": [
-    "flutter",
-    "firebase",
-    "riverpod",
-    "react",
-    "next.js",
-    "node.js",
-    "express",
-    "mongodb",
-    "mysql",
-    "java",
-    "dsa",
-    "git",
-    "docker",
-    "postman",
-    "salesforce",
-    "sqlite"
+    "Flutter",
+    "Dart",
+    "Firebase",
+    "Riverpod",
+    "SQLite",
+    "React",
+    "Next.js",
+    "Node.js",
+    "Express",
+    "MongoDB",
+    "MySQL",
+    "Java",
+    "DSA",
+    "Git",
+    "Docker",
+    "Postman",
+    "Gemini API",
+    "REST APIs",
+    "Salesforce",
+    "SOQL",
+    "JWT",
+    "OOP"
   ],
   "keywords": [
     "full stack",
@@ -41,7 +49,9 @@
     "marketing",
     "business development",
     "hr",
-    "content writing"
+    "content writing",
+    "telecalling",
+    "seo"
   ],
   "location_preferences": [
     "remote",
@@ -50,16 +60,53 @@
     "pune",
     "mumbai",
     "bangalore",
+    "bengaluru",
+    "hyderabad",
     "jalgaon",
     "maharashtra"
   ],
+  "preferred_mode": [
+    "remote",
+    "hybrid"
+  ],
+  "preferred_cities": [
+    "Bengaluru",
+    "Pune",
+    "Hyderabad",
+    "Mumbai",
+    "Remote"
+  ],
+  "avoid_companies": [],
+  "projects": [
+    "Krushi Mitra — AI-Powered Farmer Assistance App (Flutter, Firebase, Riverpod, Gemini API, Claude API, SQLite, OpenWeatherMap)",
+    "CrazyXAni — Anime Streaming Platform (Next.js, React, Node.js, MongoDB, Anilist API)",
+    "Inventory Management REST API (Node.js, Express, MySQL, JWT, Postman)",
+    "Java OOP Console Application (Java, OOP, Collections, Exception Handling)"
+  ],
+  "achievement": "Top ~800 of 31,000+ participants at Meta PyTorch OpenEnv Hackathon",
   "min_stipend": 0,
-  "job_types": ["internship", "full-time", "contract"],
-  "countries": ["India"],
+  "job_types": [
+    "internship",
+    "full-time",
+    "contract"
+  ],
+  "countries": [
+    "India"
+  ],
   "target_companies": [
     "google.com",
     "amazon.jobs",
     "microsoft.com"
   ],
-  "resume_path": "./data/resume.pdf"
+  "resume_path": "./data/resume.pdf",
+  "notice_period": "Immediate",
+  "current_ctc": "0",
+  "expected_ctc": "As per industry standards",
+  "willing_to_relocate": "Yes",
+  "open_to_hybrid": "Yes",
+  "years_of_experience": "0",
+  "work_authorization": "Indian Citizen",
+  "phone": "",
+  "gender": "",
+  "dob": ""
 }

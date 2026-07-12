@@ -54,10 +54,11 @@ def main():
     # ═══════════════════════════════════════════════════════════
     print("\n--- 2. AI Brain (Anthropic / Gemini) ---")
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
-    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    gemini_keys_str = os.getenv("GEMINI_API_KEY", "")
+    gemini_key = gemini_keys_str.split(",")[0].strip() if gemini_keys_str else ""
 
     has_anthropic = bool(anthropic_key) and anthropic_key != "your_key_here"
-    has_gemini = bool(gemini_key) and gemini_key != "your_gemini_key_here"
+    has_gemini = bool(gemini_key) and gemini_key not in ("your_api_key_here", "your_gemini_key_here")
 
     check("ANTHROPIC_API_KEY is set", has_anthropic, "Missing Claude API key (optional)", warn=True)
     check("GEMINI_API_KEY is set", has_gemini, "Missing Gemini API key", warn=not has_anthropic)

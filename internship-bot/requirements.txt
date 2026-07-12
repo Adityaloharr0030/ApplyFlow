@@ -29,10 +29,10 @@ python-telegram-bot>=22.0
 
 # --- Email (smtplib is stdlib — no install needed) ---
 
-# --- Dashboard ---
-streamlit>=1.35.0
+# --- Dashboard Backend ---
+fastapi>=0.100.0
+uvicorn>=0.23.0
 pandas>=2.2.0
-plotly>=5.22.0
 
 # --- Scheduling ---
 schedule>=1.2.2

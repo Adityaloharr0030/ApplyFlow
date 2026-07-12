@@ -202,17 +202,31 @@ class InternshalaPlatform(Platform):
                 logger.info(f"  [DRY RUN] Would apply to {listing.get('title')} @ {listing.get('company')}")
                 return {"success": True, "message": "Dry run — not submitted"}
 
+            from utils.human_sim import human_click, human_scroll, random_idle
+            from utils.otp_handler import handle_otp_if_present
+            from agent.form_filler import fill_form_fields, answer_question
+
             apply_url = listing.get("apply_url", "")
+
+            # Human-like warm-up: briefly visit homepage before jumping to listing
+            try:
+                driver.get("https://internshala.com/internships")
+                random_idle(2.5, 5.0)
+                human_scroll(driver, direction="down")
+                random_idle(0.8, 2.0)
+            except Exception:
+                pass
+
             logger.info(f"[Internshala] Navigating to: {apply_url}")
             driver.get(apply_url)
-            time.sleep(random.uniform(2.0, 4.0))
+            random_idle(3.5, 6.5)
 
             if "404" in driver.title.lower() or "not found" in driver.page_source.lower():
                 return {"success": False, "message": "Listing page not found (404)"}
 
             if "captcha" in driver.page_source.lower() or "unusual activity" in driver.page_source.lower():
                 if os.getenv("HEADLESS", "true").lower() == "false":
-                    logger.warning("  ⚠️ Captcha detected! You have 60 seconds to solve it manually in the browser...")
+                    logger.warning("  ⚠️ Captcha detected! You have 60 seconds to solve it manually...")
                     for _ in range(20):
                         time.sleep(3)
                         if "captcha" not in driver.page_source.lower() and "unusual activity" not in driver.page_source.lower():
@@ -220,11 +234,22 @@ class InternshalaPlatform(Platform):
                             break
                     else:
                         self.record_captcha()
-                        return {"success": False, "message": "Blocked by CAPTCHA (Timed out waiting for manual solve)"}
+                        return {"success": False, "message": "Blocked by CAPTCHA (Timed out)"}
                 else:
                     self.record_captcha()
                     return {"success": False, "message": "Blocked by CAPTCHA"}
 
+            # Check if we're logged in
+            page_source_raw = driver.page_source
+            if "is_guest = 1" in page_source_raw or "is_guest=1" in page_source_raw:
+                logger.warning("[Internshala] Not logged in (guest user)")
+                return {"success": False, "message": "Not logged in — login required"}
+
+            if "login" in driver.current_url.lower() or "registration" in driver.current_url.lower():
+                logger.warning("[Internshala] Redirected to login page")
+                return {"success": False, "message": "Redirected to login — not authenticated"}
+
+            # ── Find and click Apply button ────────────────────────────────
             apply_clicked = False
             apply_selectors = [
                 "button#continue_button",
@@ -241,10 +266,10 @@ class InternshalaPlatform(Platform):
                 try:
                     btn = driver.find_element("css selector", selector)
                     if btn.is_displayed():
-                        btn.click()
+                        human_click(driver, btn)
                         apply_clicked = True
                         logger.info("  ✓ Clicked Apply Now button")
-                        time.sleep(random.uniform(2.0, 3.0))
+                        random_idle(2.0, 3.0)
                         break
                 except Exception:
                     continue
@@ -253,9 +278,9 @@ class InternshalaPlatform(Platform):
                 try:
                     from selenium.webdriver.common.by import By
                     btn = driver.find_element(By.PARTIAL_LINK_TEXT, "Apply")
-                    btn.click()
+                    human_click(driver, btn)
                     apply_clicked = True
-                    time.sleep(random.uniform(2.0, 3.0))
+                    random_idle(2.0, 3.0)
                 except Exception:
                     pass
 
@@ -263,51 +288,61 @@ class InternshalaPlatform(Platform):
                 logger.warning("[Internshala] Could not find Apply button")
                 return {"success": False, "message": "Could not find Apply Now button"}
 
-            cover_filled = False
-            textarea_selectors = [
+            # ── Fill cover letter ──────────────────────────────────────────
+            cover_selectors = [
                 "textarea#cover_letter",
                 "textarea[name='cover_letter']",
                 "textarea.cover_letter",
                 "textarea#text_input",
                 "textarea[placeholder*='cover']",
                 "textarea[placeholder*='Cover']",
-                "textarea[placeholder*='answer']",
                 ".ql-editor",
             ]
 
-            for selector in textarea_selectors:
+            for selector in cover_selectors:
                 try:
                     textarea = driver.find_element("css selector", selector)
                     if textarea.is_displayed():
                         textarea.clear()
                         textarea.send_keys(cover_note)
-                        cover_filled = True
                         logger.info("  ✓ Filled cover letter textarea")
-                        time.sleep(random.uniform(1.0, 2.0))
+                        random_idle(1.0, 2.0)
                         break
                 except Exception:
                     continue
 
+            # ── Smart form filling (dropdowns, radios, extra fields) ───────
+            filled = fill_form_fields(
+                driver, profile,
+                skip_selectors=["textarea#cover_letter", "textarea[name='cover_letter']"]
+            )
+            if filled > 0:
+                logger.info(f"  ✓ Smart-filled {filled} additional form field(s)")
+
+            # ── Handle resume upload ───────────────────────────────────────
             try:
-                extra_textareas = driver.find_elements("css selector", "textarea:not([id='cover_letter'])")
-                for ta in extra_textareas:
-                    if ta.is_displayed() and not ta.get_attribute("value"):
-                        question_text = ""
-                        try:
-                            # Try to find the question label associated with this textarea
-                            question_elem = ta.find_element("xpath", "./preceding::label[1] | ./preceding::div[contains(@class, 'question')][1]")
-                            question_text = question_elem.text.strip()
-                        except Exception:
-                            question_text = "Are you available and qualified for this role?"
-                            
-                        logger.info(f"  [Internshala] Found extra question: {question_text[:50]}...")
-                        smart_answer = answer_question(question_text, profile)
-                        ta.send_keys(smart_answer)
-                        time.sleep(random.uniform(1.0, 2.0))
-            except Exception as e:
-                logger.debug(f"  [Internshala] Error filling extra textareas: {e}")
+                file_inputs = driver.find_elements("css selector", "input[type='file']")
+                resume_path = profile.get("resume_path", "")
+                if file_inputs and resume_path:
+                    abs_path = os.path.abspath(resume_path)
+                    if os.path.exists(abs_path):
+                        for fi in file_inputs:
+                            try:
+                                fi.send_keys(abs_path)
+                                logger.info("  ✓ Uploaded resume")
+                                random_idle(1.0, 2.0)
+                                break
+                            except Exception:
+                                continue
+            except Exception:
                 pass
 
+            # ── Handle OTP if required ─────────────────────────────────────
+            if not handle_otp_if_present(driver, platform="Internshala", timeout=120):
+                self.record_captcha()
+                return {"success": False, "message": "OTP verification timed out"}
+
+            # ── Submit ─────────────────────────────────────────────────────
             submit_clicked = False
             submit_selectors = [
                 "button#submit",
@@ -322,10 +357,10 @@ class InternshalaPlatform(Platform):
                 try:
                     btn = driver.find_element("css selector", selector)
                     if btn.is_displayed() and btn.is_enabled():
-                        btn.click()
+                        human_click(driver, btn)
                         submit_clicked = True
                         logger.info("  ✓ Clicked Submit button")
-                        time.sleep(random.uniform(3.0, 5.0))
+                        random_idle(3.0, 5.0)
                         break
                 except Exception:
                     continue
@@ -334,6 +369,11 @@ class InternshalaPlatform(Platform):
                 logger.warning("[Internshala] Could not find Submit button")
                 return {"success": False, "message": "Could not find Submit button"}
 
+            # ── Post-submit OTP check ──────────────────────────────────────
+            if not handle_otp_if_present(driver, platform="Internshala", timeout=120):
+                return {"success": False, "message": "Post-submit OTP timed out"}
+
+            # ── Verify success ─────────────────────────────────────────────
             page_source = driver.page_source.lower()
             if (
                 "successfully" in page_source
@@ -345,7 +385,6 @@ class InternshalaPlatform(Platform):
                     f"[Internshala] ✅ Successfully applied to "
                     f"{listing.get('title')} at {listing.get('company')}"
                 )
-                # Successful apply resets captcha counter
                 self.captcha_count = 0
                 return {"success": True, "message": "Application submitted successfully"}
 
@@ -357,3 +396,5 @@ class InternshalaPlatform(Platform):
         except Exception as e:
             logger.error(f"[Internshala] ✗ Error during application: {e}")
             return {"success": False, "message": f"Error: {str(e)}"}
+
+

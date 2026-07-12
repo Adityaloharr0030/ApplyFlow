@@ -1,0 +1,99 @@
+{
+  "name": "Aditya Lohar",
+  "email": "adityalohar00030@gmail.com",
+  "phone": "+91 86250 41969",
+  "location": "Jalgaon, Maharashtra",
+  "degree": "B.Tech Computer Engineering",
+  "college": "KBSCOE&T Jalgaon (DBATU Lonere)",
+  "graduation_year": "2027",
+  "skills": [
+    "Flutter",
+    "Dart",
+    "Firebase",
+    "Riverpod",
+    "SQLite",
+    "React",
+    "Next.js",
+    "Node.js",
+    "Express",
+    "MongoDB",
+    "MySQL",
+    "Java",
+    "DSA",
+    "Git",
+    "Docker",
+    "Postman",
+    "Gemini API",
+    "REST APIs",
+    "Salesforce",
+    "SOQL",
+    "JWT",
+    "OOP"
+  ],
+  "projects": [
+    {
+      "name": "Krushi Mitra — AI-Powered Farmer Assistance App",
+      "techs": [
+        "Flutter",
+        "Firebase",
+        "Riverpod",
+        "Gemini API",
+        "Claude API",
+        "SQLite",
+        "OpenWeatherMap"
+      ],
+      "bullets": [
+        "Architected 11-feature production Flutter app: AI Crop Doctor, Chatbot, Live Mandi Prices, Weather, Soil Advisor.",
+        "Built Gemini multi-key load balancing with Claude fallback; Firebase OTP auth + offline Firestore-to-SQLite sync.",
+        "Full trilingual support (Hindi, Marathi, English) — Final-year B.Tech project under Prof. P.A. Patil, KBSCOE&T."
+      ]
+    },
+    {
+      "name": "CrazyXAni — Anime Streaming Platform",
+      "techs": [
+        "Next.js",
+        "React",
+        "Node.js",
+        "MongoDB",
+        "Anilist API"
+      ],
+      "bullets": [
+        "Full-stack SSR streaming platform with Anilist API aggregation, search, MongoDB watchlist.",
+        "SEO-optimised via Next.js SSR; RESTful backend with real-time API calls and user session management."
+      ]
+    },
+    {
+      "name": "Inventory Management REST API",
+      "techs": [
+        "Node.js",
+        "Express",
+        "MySQL",
+        "JWT",
+        "Postman"
+      ],
+      "bullets": [
+        "Secure full-CRUD REST API with JWT role-based auth and normalised MySQL schema.",
+        "All endpoints tested via Postman collections."
+      ]
+    },
+    {
+      "name": "Java OOP Console Application",
+      "techs": [
+        "Java",
+        "OOP",
+        "Collections",
+        "Exception Handling"
+      ],
+      "bullets": [
+        "Clean implementation of encapsulation, inheritance, polymorphism, ArrayList, HashMap.",
+        "Robust exception handling for maintainable production-style code."
+      ]
+    }
+  ],
+  "achievements": [
+    "Top ~800 of 31,000+ participants at Meta PyTorch OpenEnv Hackathon",
+    "Built Krushi Mitra — full production Flutter app with 11 features as final-year project",
+    "Multi-key Gemini load balancing with Claude AI fallback in production app"
+  ],
+  "raw_text": "Aditya PROFILE\nLohar B.Tech Computer Engineering student (Expected 2027) with hands-on experience shipping production-grade\napplications across Flutter Mobile, Full-Stack Web (React / Next.js / Node.js), Java Engineering, and\nFLUTTER · FULL-STACK · JAVA\nSalesforce CRM. Built a complete AI-powered farmer assistance app integrating Gemini & Claude APIs,\nFirebase, and offline SQLite sync. Eager to contribute real skills in a challenging internship environment.\nCONTACT\nPROJECTS\nadityalohar00030@gmail.com\nKrushi Mitra — AI-Powered Farmer Assistance App\n+91 86250 41969 Flutter Firebase Riverpod Gemini API Claude API SQLite OpenWeatherMap\nJalgaon, Maharashtra —Architected a full production Flutter app with 11 features: AI Crop Doctor, Chatbot, Live Mandi Prices, Weather,\nSoil Advisor, Govt. Schemes, Crop Calendar, Farm Diary, Input Calculator and Community.\nAdityaloharr0030\n—Built \"Farmer DNA\" — personalised AI context system; Gemini multi-key load balancing with Claude as fallback;\naditya-lohar-3037b32b9 Firebase OTP auth + real-time Firestore-to-SQLite offline sync.\nadi-portfolio-beta-coral.vercel.app —Full trilingual support (Hindi, Marathi, English) with custom design system (green #1B5E20, gold #F9A825,\nPoppins).\nFlutter / Mobile —Final-year B.Tech project under Prof. P. A. Patil, KBSCOE&T Jalgaon (DBATU).\nFlutter 3.x Dart Firebase\nCrazyXAni — Anime Streaming Platform\nRiverpod SQLite Gemini API\nNext.js React Node.js MongoDB Anilist API\nClaude API —Full-stack SSR streaming platform with Anilist API aggregation, search, and MongoDB-persisted watchlist.\n—SEO-optimised via Next.js SSR; RESTful backend with real-time API calls and user session management.\nWeb\nReact Next.js Node.js Inventory Management REST API\nExpress MongoDB MySQL Node.js Express MySQL JWT Postman\nJWT SSR —Secure full-CRUD REST API with JWT role-based auth and normalised MySQL schema; all endpoints tested via\nPostman collections.\nJava & Tools\nJava OOP DSA Git Java OOP Console Application\nDocker Postman Java OOP Collections Exception Handling\n—Clean implementation of encapsulation, inheritance and polymorphism; ArrayList, HashMap and robust exception\nSalesforce\nhandling for maintainable code.\nAdmin SOQL Trailhead\nDEV TOOLS\nEDUCATION\nVERSION CONTROL API TESTING DATABASES\nB.Tech — Computer Engineering Git · GitHub Postman · REST MySQL · MongoDB · SQLite ·\nKBS's COET (NMKC), Jalgaon Firestore\nDBATU, Lonere\n2023 – 2027 (Expected) INFRASTRUCTURE PLATFORMS CORE SUBJECTS\nDocker · Vercel Android · iOS · Web DSA · DBMS · OS · CN · OOP\nINTERESTS\nSystem Design Mobile Dev\nOpen Source API Design\nAVAILABILITY\nOpen to internship\nJalgaon, Maharashtra · 2027"
+}

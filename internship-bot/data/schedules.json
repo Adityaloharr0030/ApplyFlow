@@ -1,0 +1,23 @@
+[
+  {
+    "platform": "naukri",
+    "time": "10:00",
+    "days": "weekdays",
+    "runtime_minutes": 30,
+    "enabled": true
+  },
+  {
+    "platform": "internshala",
+    "time": "11:00",
+    "days": "daily",
+    "runtime_minutes": 45,
+    "enabled": true
+  },
+  {
+    "platform": "linkedin",
+    "time": "20:00",
+    "days": "daily",
+    "runtime_minutes": 20,
+    "enabled": true
+  }
+]

@@ -34,3 +34,12 @@ ENV/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Temporary Test Files
+test_out.txt
+unstop_page.html
+unstop_screenshot.png
+unstop_test.txt
+
+# Temporary profiles
+../bot_chrome_profile_tmp/

@@ -2,51 +2,128 @@
 agent/ai_client.py
 ──────────────────
 Unified AI Client for ApplyFlow.
-Provides a single interface for AI calls.
-Prioritizes Anthropic (Claude) if an API key is available.
-Falls back to Google Gemini if Anthropic is not configured.
+Provides a robust multi-model fallback chain.
+If one model/key hits a rate limit (429), it instantly tries the next one.
+
+Available Models:
+1. Anthropic (Claude) — if key provided
+2. Gemini (loops through all comma-separated keys)
 """
 
 import os
 import logging
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Constants
 CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
+def _get_gemini_model(model_type: str) -> str:
+    if model_type == "scorer":
+        return os.getenv("TUNED_SCORER_MODEL", os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+    elif model_type == "cover":
+        return os.getenv("TUNED_COVER_MODEL", os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+    return os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
-def get_ai_response(system_prompt: str, user_prompt: str, max_tokens: int = 1024, response_format: str = "text") -> Optional[str]:
+class AILimitReached(Exception):
+    """Raised when an API rate limit or quota is hit."""
+    pass
+
+# Global state to track exhausted keys during a run
+_exhausted_keys = set()
+_key_cycle = None
+_last_keys_list = []
+
+def _get_working_keys() -> list[dict]:
     """
-    Get a response from the available AI provider.
-    Tries Anthropic first, falls back to Gemini.
+    Returns a list of dictionaries with 'provider' and 'api_key'.
+    Excludes any keys that have been marked as exhausted (429) during this run.
+    """
+    keys = []
     
-    Args:
-        system_prompt: The system instruction for the AI.
-        user_prompt: The user input.
-        max_tokens: Maximum tokens to generate.
-        response_format: 'text' or 'json' (helps guide the model if supported).
+    # 1. Anthropic
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if anthropic_key and anthropic_key not in ("your_key_here", "") and anthropic_key not in _exhausted_keys:
+        keys.append({"provider": "anthropic", "api_key": anthropic_key})
         
-    Returns:
-        The generated text, or None if no AI is available or an error occurred.
+    # 2. Gemini (can have multiple keys separated by comma)
+    gemini_keys_str = os.getenv("GEMINI_API_KEY", "")
+    for k in gemini_keys_str.split(","):
+        k = k.strip()
+        if k and k not in ("your_api_key_here", "your_gemini_key_here", "your_second_gemini_key_here") and k not in _exhausted_keys:
+            keys.append({"provider": "gemini", "api_key": k})
+            
+    return keys
+
+def get_ai_response(system_prompt: str, user_prompt: str, max_tokens: int = 1024, response_format: str = "text", model_type: str = "base") -> Optional[str]:
     """
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
-    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    Get a response from the AI.
+    Uses round-robin load balancing across all working keys.
+    If a 429/Rate Limit occurs, it bans that key for the rest of the run and fails over.
+    """
+    global _key_cycle, _last_keys_list
     
-    if anthropic_key and anthropic_key != "your_key_here":
-        return _call_anthropic(anthropic_key, system_prompt, user_prompt, max_tokens)
-    elif gemini_key and gemini_key != "your_api_key_here":
-        return _call_gemini(gemini_key, system_prompt, user_prompt, max_tokens, response_format)
-    else:
-        logger.warning("[AI] No valid API keys found (Anthropic or Gemini).")
+    working_keys = _get_working_keys()
+    
+    if not working_keys:
+        logger.warning("[AI] No valid API keys found (all exhausted or none provided).")
         return None
+
+    # Update cycle if working keys changed (e.g. one got banned)
+    if working_keys != _last_keys_list:
+        import itertools
+        _last_keys_list = working_keys
+        _key_cycle = itertools.cycle(working_keys)
+
+    # We will try up to how many working keys we have
+    attempts = len(working_keys)
+    last_error = None
+    
+    for attempt in range(attempts):
+        key_data = next(_key_cycle)
+        provider = key_data["provider"]
+        api_key = key_data["api_key"]
+        
+        try:
+            if provider == "anthropic":
+                return _call_anthropic(api_key, system_prompt, user_prompt, max_tokens)
+            elif provider == "gemini":
+                # Mask key for logging: show first 4 and last 4 chars
+                masked = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
+                return _call_gemini(api_key, system_prompt, user_prompt, max_tokens, response_format, masked, model_type)
+                
+        except AILimitReached as e:
+            logger.warning(f"  [AI] {provider.capitalize()} hit limit: {e}. Removing key from rotation.")
+            _exhausted_keys.add(api_key)
+            last_error = e
+            
+            # Rebuild working keys immediately
+            working_keys = _get_working_keys()
+            if not working_keys:
+                logger.error("  [AI] ✗ All AI models/keys exhausted limits.")
+                raise Exception("All AI quotas exhausted.") from e
+                
+            import itertools
+            _last_keys_list = working_keys
+            _key_cycle = itertools.cycle(working_keys)
+            logger.info(f"  [AI] → Failing over... {len(working_keys)} keys remaining in rotation.")
+            continue
+                
+        except Exception as e:
+            logger.error(f"  [AI] {provider.capitalize()} error: {e}")
+            last_error = e
+            if attempt < attempts - 1:
+                logger.info("  [AI] → Failing over to next AI model/key due to error...")
+                continue
+
+    # If we get here, all failed
+    return None
 
 
 def _call_anthropic(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int) -> Optional[str]:
     try:
-        from anthropic import Anthropic
+        from anthropic import Anthropic, RateLimitError
         client = Anthropic(api_key=api_key)
         
         logger.debug(f"[AI] Calling Anthropic ({CLAUDE_MODEL})")
@@ -60,20 +137,20 @@ def _call_anthropic(api_key: str, system_prompt: str, user_prompt: str, max_toke
         )
         return message.content[0].text
     except ImportError:
-        logger.warning("[AI] 'anthropic' library not installed. Falling back to Gemini.")
-        gemini_key = os.getenv("GEMINI_API_KEY", "")
-        if gemini_key and gemini_key != "your_api_key_here":
-             return _call_gemini(gemini_key, system_prompt, user_prompt, max_tokens, "text")
-        return None
+        logger.warning("[AI] 'anthropic' library not installed.")
+        raise Exception("anthropic SDK not installed")
     except Exception as e:
-        logger.error(f"[AI] Anthropic API Error: {e}")
-        return None
+        err_str = str(e).lower()
+        if "429" in err_str or "rate_limit" in err_str or "quota" in err_str:
+            raise AILimitReached("Anthropic Rate Limit hit.")
+        raise e
 
 
-def _call_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int, response_format: str) -> Optional[str]:
+def _call_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int, response_format: str, masked_key: str, model_type: str) -> Optional[str]:
     try:
         from google import genai
         from google.genai import types
+        from google.genai.errors import APIError
         
         client = genai.Client(api_key=api_key)
         
@@ -88,13 +165,17 @@ def _call_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens:
              
         config = types.GenerateContentConfig(**config_kwargs)
         
-        logger.debug(f"[AI] Calling Gemini ({GEMINI_MODEL})")
+        model_name = _get_gemini_model(model_type)
+        logger.debug(f"[AI] Calling Gemini ({model_name}) using key {masked_key}")
         response = client.models.generate_content(
-            model=GEMINI_MODEL,
+            model=model_name,
             contents=user_prompt,
             config=config
         )
         return response.text
+        
     except Exception as e:
-        logger.error(f"[AI] Gemini API Error: {e}")
-        return None
+        err_str = str(e).lower()
+        if "429" in err_str or "quota" in err_str or "resource_exhausted" in err_str:
+            raise AILimitReached("Gemini Free Tier Quota Exhausted.")
+        raise e
