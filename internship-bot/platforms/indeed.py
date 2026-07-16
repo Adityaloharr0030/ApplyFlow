@@ -69,7 +69,8 @@ class IndeedPlatform(Platform):
                 logger.info(f"  [DRY RUN] Would apply to {listing.get('title')} @ {listing.get('company')}")
                 return {"success": True, "message": "Dry run — not submitted"}
 
-            from utils.human_sim import human_click, human_scroll, random_idle, simulate_page_read
+            from utils.real_mouse import real_click, bring_browser_to_front
+            from utils.human_sim import random_idle, simulate_page_read
             from utils.otp_handler import handle_otp_if_present
             from agent.form_filler import fill_form_fields, answer_question
 
@@ -113,9 +114,10 @@ class IndeedPlatform(Platform):
                         btn = driver.find_element("css selector", selector)
 
                     if btn.is_displayed():
-                        human_click(driver, btn)
+                        bring_browser_to_front(driver)
+                        real_click(driver, btn)
                         apply_clicked = True
-                        logger.info("  ✓ Clicked Indeed Apply button")
+                        logger.info("  ✓ Clicked Indeed Apply button (real mouse)")
                         random_idle(2.0, 4.0)
                         break
                 except Exception:
@@ -218,8 +220,8 @@ class IndeedPlatform(Platform):
                             continue_btn = btn
 
                     if submit_btn:
-                        human_click(driver, submit_btn)
-                        logger.info("  ✓ Clicked Submit/Apply")
+                        real_click(driver, submit_btn)
+                        logger.info("  ✓ Clicked Submit/Apply (real mouse)")
                         random_idle(3.0, 5.0)
                         self.captcha_count = 0
                         if in_iframe:
@@ -232,8 +234,8 @@ class IndeedPlatform(Platform):
                         return {"success": True, "message": "Indeed Application submitted (confirmation uncertain)"}
 
                     if continue_btn:
-                        human_click(driver, continue_btn)
-                        logger.info(f"  ✓ Clicked Continue (Step {step+1})")
+                        real_click(driver, continue_btn)
+                        logger.info(f"  ✓ Clicked Continue (Step {step+1}) (real mouse)")
                         random_idle(1.5, 3.0)
                     else:
                         # Check if we've been submitted already

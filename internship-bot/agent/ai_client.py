@@ -2,12 +2,17 @@
 agent/ai_client.py
 ──────────────────
 Unified AI Client for ApplyFlow.
-Provides a robust multi-model fallback chain.
-If one model/key hits a rate limit (429), it instantly tries the next one.
+Provides a robust multi-model fallback chain with smart routing:
 
-Available Models:
-1. Anthropic (Claude) — if key provided
+Priority Order (fastest first):
+1. Groq (Llama 3.3 70B) — blazing fast, used for cover notes & Q&A
 2. Gemini (loops through all comma-separated keys)
+3. Anthropic (Claude) — premium fallback
+
+Smart Routing:
+- "fast" tasks (cover notes, form Q&A) → Groq first, then Gemini
+- "scorer" tasks (listing filtering) → Gemini first (better at structured output)
+- "base" tasks → Groq first, then Gemini
 """
 
 import os
@@ -35,26 +40,52 @@ _exhausted_keys = set()
 _key_cycle = None
 _last_keys_list = []
 
-def _get_working_keys() -> list[dict]:
+def reset_exhausted_keys():
+    """Call this at the start of each bot run to clear exhausted key state."""
+    global _exhausted_keys, _key_cycle, _last_keys_list
+    _exhausted_keys = set()
+    _key_cycle = None
+    _last_keys_list = []
+    logger.info("[AI] Reset all API key states for new run")
+
+def _get_working_keys(model_type: str = "base") -> list[dict]:
     """
     Returns a list of dictionaries with 'provider' and 'api_key'.
     Excludes any keys that have been marked as exhausted (429) during this run.
-    """
-    keys = []
     
-    # 1. Anthropic
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if anthropic_key and anthropic_key not in ("your_key_here", "") and anthropic_key not in _exhausted_keys:
-        keys.append({"provider": "anthropic", "api_key": anthropic_key})
-        
+    Smart routing:
+    - For "scorer" tasks: Gemini first (better structured output), then Groq
+    - For everything else: Groq first (fastest), then Gemini
+    """
+    groq_keys = []
+    gemini_keys = []
+    anthropic_keys = []
+    
+    # 1. Groq
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    if groq_key and groq_key not in ("your_key_here", "") and groq_key not in _exhausted_keys:
+        groq_keys.append({"provider": "groq", "api_key": groq_key})
+
     # 2. Gemini (can have multiple keys separated by comma)
     gemini_keys_str = os.getenv("GEMINI_API_KEY", "")
     for k in gemini_keys_str.split(","):
         k = k.strip()
         if k and k not in ("your_api_key_here", "your_gemini_key_here", "your_second_gemini_key_here") and k not in _exhausted_keys:
-            keys.append({"provider": "gemini", "api_key": k})
-            
-    return keys
+            gemini_keys.append({"provider": "gemini", "api_key": k})
+
+    # 3. Anthropic
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if anthropic_key and anthropic_key not in ("your_key_here", "") and anthropic_key not in _exhausted_keys:
+        anthropic_keys.append({"provider": "anthropic", "api_key": anthropic_key})
+
+    # Smart routing based on task type
+    if model_type == "scorer":
+        # Scoring needs structured output → Gemini is better at this
+        return gemini_keys + groq_keys + anthropic_keys
+    else:
+        # Cover notes, Q&A, base tasks → Groq is fastest
+        return groq_keys + gemini_keys + anthropic_keys
+
 
 def get_ai_response(system_prompt: str, user_prompt: str, max_tokens: int = 1024, response_format: str = "text", model_type: str = "base") -> Optional[str]:
     """
@@ -64,7 +95,7 @@ def get_ai_response(system_prompt: str, user_prompt: str, max_tokens: int = 1024
     """
     global _key_cycle, _last_keys_list
     
-    working_keys = _get_working_keys()
+    working_keys = _get_working_keys(model_type)
     
     if not working_keys:
         logger.warning("[AI] No valid API keys found (all exhausted or none provided).")
@@ -88,8 +119,10 @@ def get_ai_response(system_prompt: str, user_prompt: str, max_tokens: int = 1024
         try:
             if provider == "anthropic":
                 return _call_anthropic(api_key, system_prompt, user_prompt, max_tokens)
+            elif provider == "groq":
+                masked = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
+                return _call_groq(api_key, system_prompt, user_prompt, max_tokens, masked, model_type)
             elif provider == "gemini":
-                # Mask key for logging: show first 4 and last 4 chars
                 masked = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
                 return _call_gemini(api_key, system_prompt, user_prompt, max_tokens, response_format, masked, model_type)
                 
@@ -99,7 +132,7 @@ def get_ai_response(system_prompt: str, user_prompt: str, max_tokens: int = 1024
             last_error = e
             
             # Rebuild working keys immediately
-            working_keys = _get_working_keys()
+            working_keys = _get_working_keys(model_type)
             if not working_keys:
                 logger.error("  [AI] ✗ All AI models/keys exhausted limits.")
                 raise Exception("All AI quotas exhausted.") from e
@@ -119,6 +152,43 @@ def get_ai_response(system_prompt: str, user_prompt: str, max_tokens: int = 1024
 
     # If we get here, all failed
     return None
+
+
+def _call_groq(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int, masked_key: str, model_type: str) -> Optional[str]:
+    """Call Groq API (Llama 3.3 70B — blazing fast)."""
+    try:
+        from groq import Groq
+
+        model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        logger.debug(f"[AI] Calling Groq ({model}) using key {masked_key}")
+
+        client = Groq(api_key=api_key)
+        
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            model=model,
+            max_tokens=max_tokens,
+            temperature=0.7,
+        )
+
+        text = chat_completion.choices[0].message.content
+        if not text:
+            raise Exception("Groq returned empty response")
+        
+        logger.debug(f"[AI] Groq response received ({len(text)} chars)")
+        return text.strip()
+
+    except ImportError:
+        logger.warning("[AI] 'groq' library not installed.")
+        raise Exception("groq SDK not installed")
+    except Exception as e:
+        err_str = str(e).lower()
+        if "429" in err_str or "rate_limit" in err_str or "quota" in err_str or "limit" in err_str:
+            raise AILimitReached("Groq Rate Limit hit.")
+        raise e
 
 
 def _call_anthropic(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int) -> Optional[str]:
@@ -146,25 +216,65 @@ def _call_anthropic(api_key: str, system_prompt: str, user_prompt: str, max_toke
         raise e
 
 
+def _extract_gemini_text(response) -> Optional[str]:
+    """Extract text from Gemini GenerateContentResponse with fallback shapes."""
+    if response is None:
+        return None
+
+    text = None
+    try:
+        text = getattr(response, "text", None)
+        if text:
+            return str(text).strip()
+    except Exception:
+        pass
+
+    try:
+        candidates = getattr(response, "candidates", None)
+        if candidates:
+            first = candidates[0]
+            content = getattr(first, "content", None)
+            if content:
+                parts = getattr(content, "parts", None)
+                if parts:
+                    return "".join(str(getattr(p, "text", "")) for p in parts).strip()
+                return str(getattr(content, "text", "")).strip()
+    except Exception:
+        pass
+
+    try:
+        content = getattr(response, "content", None)
+        if content:
+            parts = getattr(content, "parts", None)
+            if parts:
+                return "".join(str(getattr(p, "text", "")) for p in parts).strip()
+            return str(getattr(content, "text", "")).strip()
+    except Exception:
+        pass
+
+    return None
+
+
 def _call_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int, response_format: str, masked_key: str, model_type: str) -> Optional[str]:
     try:
         from google import genai
         from google.genai import types
         from google.genai.errors import APIError
-        
+
         client = genai.Client(api_key=api_key)
-        
+
         config_kwargs = {
             "system_instruction": system_prompt,
             "temperature": 0.7,
             "max_output_tokens": max_tokens,
         }
-        
+
         if response_format == "json":
-             config_kwargs["response_mime_type"] = "application/json"
-             
+            config_kwargs["response_mime_type"] = "application/json"
+            config_kwargs["response_json_schema"] = {"type": "object"}
+
         config = types.GenerateContentConfig(**config_kwargs)
-        
+
         model_name = _get_gemini_model(model_type)
         logger.debug(f"[AI] Calling Gemini ({model_name}) using key {masked_key}")
         response = client.models.generate_content(
@@ -172,8 +282,12 @@ def _call_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens:
             contents=user_prompt,
             config=config
         )
-        return response.text
-        
+
+        text = _extract_gemini_text(response)
+        if not text:
+            raise Exception("Gemini returned empty response")
+        return text
+
     except Exception as e:
         err_str = str(e).lower()
         if "429" in err_str or "quota" in err_str or "resource_exhausted" in err_str:

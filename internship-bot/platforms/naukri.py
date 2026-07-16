@@ -272,7 +272,8 @@ class NaukriPlatform(Platform):
             apply_url = listing.get("apply_url", "")
 
             # Import utilities
-            from utils.human_sim import human_click, human_scroll, simulate_page_read, random_idle
+            from utils.real_mouse import real_click, bring_browser_to_front
+            from utils.human_sim import simulate_page_read, random_idle
             from utils.otp_handler import handle_otp_if_present
             from agent.form_filler import fill_form_fields
 
@@ -390,11 +391,12 @@ class NaukriPlatform(Platform):
 
             # Click Apply
             try:
-                human_click(driver, apply_btn)
+                bring_browser_to_front(driver)
+                real_click(driver, apply_btn)
             except Exception:
                 driver.execute_script("arguments[0].click();", apply_btn)
 
-            logger.info("  ✓ Clicked Apply button")
+            logger.info("  ✓ Clicked Apply button (real mouse)")
             random_idle(2.0, 4.0)
 
             # ── Step 4: Handle OTP if required ─────────────────────────────
@@ -489,10 +491,10 @@ class NaukriPlatform(Platform):
 
             if submit_btn:
                 try:
-                    human_click(driver, submit_btn)
+                    real_click(driver, submit_btn)
                 except Exception:
                     driver.execute_script("arguments[0].click();", submit_btn)
-                logger.info("  ✓ Clicked Submit")
+                logger.info("  ✓ Clicked Submit (real mouse)")
                 random_idle(3.0, 5.0)
             else:
                 # Some Naukri listings are 1-click apply (no separate submit)

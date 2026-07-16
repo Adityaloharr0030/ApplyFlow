@@ -202,7 +202,8 @@ class InternshalaPlatform(Platform):
                 logger.info(f"  [DRY RUN] Would apply to {listing.get('title')} @ {listing.get('company')}")
                 return {"success": True, "message": "Dry run — not submitted"}
 
-            from utils.human_sim import human_click, human_scroll, random_idle
+            from utils.real_mouse import real_click, real_scroll, bring_browser_to_front
+            from utils.human_sim import random_idle
             from utils.otp_handler import handle_otp_if_present
             from agent.form_filler import fill_form_fields, answer_question
 
@@ -212,7 +213,8 @@ class InternshalaPlatform(Platform):
             try:
                 driver.get("https://internshala.com/internships")
                 random_idle(2.5, 5.0)
-                human_scroll(driver, direction="down")
+                bring_browser_to_front(driver)
+                real_scroll(driver, direction="down")
                 random_idle(0.8, 2.0)
             except Exception:
                 pass
@@ -266,9 +268,9 @@ class InternshalaPlatform(Platform):
                 try:
                     btn = driver.find_element("css selector", selector)
                     if btn.is_displayed():
-                        human_click(driver, btn)
+                        real_click(driver, btn)
                         apply_clicked = True
-                        logger.info("  ✓ Clicked Apply Now button")
+                        logger.info("  ✓ Clicked Apply Now button (real mouse)")
                         random_idle(2.0, 3.0)
                         break
                 except Exception:
@@ -278,7 +280,7 @@ class InternshalaPlatform(Platform):
                 try:
                     from selenium.webdriver.common.by import By
                     btn = driver.find_element(By.PARTIAL_LINK_TEXT, "Apply")
-                    human_click(driver, btn)
+                    real_click(driver, btn)
                     apply_clicked = True
                     random_idle(2.0, 3.0)
                 except Exception:
@@ -357,9 +359,9 @@ class InternshalaPlatform(Platform):
                 try:
                     btn = driver.find_element("css selector", selector)
                     if btn.is_displayed() and btn.is_enabled():
-                        human_click(driver, btn)
+                        real_click(driver, btn)
                         submit_clicked = True
-                        logger.info("  ✓ Clicked Submit button")
+                        logger.info("  ✓ Clicked Submit button (real mouse)")
                         random_idle(3.0, 5.0)
                         break
                 except Exception:

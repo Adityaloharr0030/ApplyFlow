@@ -199,6 +199,10 @@ def run_pipeline(platform_filter: str = None):
     logger.info(f"👤 Candidate: {profile.get('name', 'Unknown')}")
     logger.info(f"🔑 Keywords: {', '.join(profile.get('keywords', []))}")
 
+    # 🔑 Reset AI key states for fresh run
+    from agent.ai_client import reset_exhausted_keys
+    reset_exhausted_keys()
+
     # 🧠 Initialize Resume Brain
     logger.info("\n" + "━" * 50)
     logger.info("🧠 STEP 0: Initializing AI Resume Brain…")

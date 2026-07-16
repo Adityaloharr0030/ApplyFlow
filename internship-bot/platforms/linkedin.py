@@ -83,7 +83,8 @@ class LinkedInPlatform(Platform):
                 logger.info(f"  [DRY RUN] Would apply to {listing.get('title')} @ {listing.get('company')}")
                 return {"success": True, "message": "Dry run — not submitted"}
 
-            from utils.human_sim import human_click, random_idle, simulate_page_read
+            from utils.real_mouse import real_click, bring_browser_to_front
+            from utils.human_sim import random_idle, simulate_page_read
             from agent.form_filler import fill_form_fields, answer_question
 
             apply_url = listing.get("apply_url", "")
@@ -105,10 +106,11 @@ class LinkedInPlatform(Platform):
             # ── Find and click Easy Apply button ───────────────────────────
             easy_apply_clicked = False
             try:
+                bring_browser_to_front(driver)
                 easy_apply_btn = driver.find_element("css selector", "button.jobs-apply-button")
-                human_click(driver, easy_apply_btn)
+                real_click(driver, easy_apply_btn)
                 easy_apply_clicked = True
-                logger.info("  ✓ Clicked Easy Apply button")
+                logger.info("  ✓ Clicked Easy Apply button (real mouse)")
                 random_idle(2.0, 3.0)
             except Exception:
                 logger.warning("[LinkedIn] Could not find Easy Apply button. Trying text-based fallback...")
@@ -132,9 +134,9 @@ class LinkedInPlatform(Platform):
                                         continue
 
                             if target:
-                                human_click(driver, target)
+                                real_click(driver, target)
                                 easy_apply_clicked = True
-                                logger.info("  ✓ Clicked Easy Apply via fallback selector")
+                                logger.info("  ✓ Clicked Easy Apply via fallback (real mouse)")
                                 random_idle(2.0, 3.0)
                                 break
                         except Exception:
@@ -161,7 +163,6 @@ class LinkedInPlatform(Platform):
                         file_inputs = driver.find_elements("css selector", "input[type='file']")
                         resume_path = profile.get("resume_path", "")
                         if file_inputs and resume_path:
-                            import os.path
                             abs_path = os.path.abspath(resume_path)
                             if os.path.exists(abs_path):
                                 for fi in file_inputs:
@@ -225,29 +226,29 @@ class LinkedInPlatform(Platform):
                             next_btn = btn
 
                     if submit_btn:
-                        human_click(driver, submit_btn)
-                        logger.info("  ✓ Clicked Submit Application")
+                        real_click(driver, submit_btn)
+                        logger.info("  ✓ Clicked Submit Application (real mouse)")
                         random_idle(3.0, 5.0)
                         self.captcha_count = 0
                         return {"success": True, "message": "LinkedIn Application submitted successfully"}
 
                     if review_btn:
-                        human_click(driver, review_btn)
-                        logger.info("  ✓ Clicked Review")
+                        real_click(driver, review_btn)
+                        logger.info("  ✓ Clicked Review (real mouse)")
                         random_idle(2.0, 4.0)
 
                         # After review, look for final submit
                         for btn in driver.find_elements("css selector", "button"):
                             if btn.is_displayed() and "submit application" in btn.text.lower():
-                                human_click(driver, btn)
-                                logger.info("  ✓ Clicked Final Submit")
+                                real_click(driver, btn)
+                                logger.info("  ✓ Clicked Final Submit (real mouse)")
                                 random_idle(3.0, 5.0)
                                 self.captcha_count = 0
                                 return {"success": True, "message": "LinkedIn Application submitted successfully"}
 
                     if next_btn:
-                        human_click(driver, next_btn)
-                        logger.info(f"  ✓ Clicked Next (Step {step+1})")
+                        real_click(driver, next_btn)
+                        logger.info(f"  ✓ Clicked Next (Step {step+1}) (real mouse)")
                         random_idle(1.5, 3.0)
                     else:
                         if not submit_btn and not review_btn:

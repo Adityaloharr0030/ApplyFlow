@@ -80,7 +80,8 @@ class UnstopPlatform(Platform):
                 logger.info(f"  [DRY RUN] Would apply to {listing.get('title')} @ {listing.get('company')}")
                 return {"success": True, "message": "Dry run — not submitted"}
 
-            from utils.human_sim import human_click, human_scroll, random_idle, simulate_page_read
+            from utils.real_mouse import real_click, real_scroll, bring_browser_to_front
+            from utils.human_sim import random_idle, simulate_page_read
             from utils.otp_handler import handle_otp_if_present
             from agent.form_filler import fill_form_fields, answer_question
 
@@ -90,7 +91,8 @@ class UnstopPlatform(Platform):
             try:
                 driver.get("https://unstop.com/internships")
                 random_idle(2.0, 4.0)
-                human_scroll(driver, direction="down")
+                bring_browser_to_front(driver)
+                real_scroll(driver, direction="down")
                 random_idle(0.8, 1.5)
             except Exception:
                 pass
@@ -146,9 +148,9 @@ class UnstopPlatform(Platform):
                         btn = driver.find_element("css selector", selector)
 
                     if btn.is_displayed():
-                        human_click(driver, btn)
+                        real_click(driver, btn)
                         apply_clicked = True
-                        logger.info("  ✓ Clicked Apply button")
+                        logger.info("  ✓ Clicked Apply button (real mouse)")
                         random_idle(2.0, 3.0)
                         break
                 except Exception:
@@ -236,8 +238,8 @@ class UnstopPlatform(Platform):
                             next_btn = btn
 
                     if submit_btn:
-                        human_click(driver, submit_btn)
-                        logger.info("  ✓ Clicked Submit/Confirm")
+                        real_click(driver, submit_btn)
+                        logger.info("  ✓ Clicked Submit/Confirm (real mouse)")
                         random_idle(3.0, 5.0)
 
                         # Post-submit OTP
@@ -253,8 +255,8 @@ class UnstopPlatform(Platform):
                         return {"success": True, "message": "Unstop Application submitted (confirmation uncertain)"}
 
                     if next_btn:
-                        human_click(driver, next_btn)
-                        logger.info(f"  ✓ Clicked Next (Step {step+1})")
+                        real_click(driver, next_btn)
+                        logger.info(f"  ✓ Clicked Next (Step {step+1}) (real mouse)")
                         random_idle(1.5, 3.0)
                     else:
                         # Check if already submitted (1-click apply)
