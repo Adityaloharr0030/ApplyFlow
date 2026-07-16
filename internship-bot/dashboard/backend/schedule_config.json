@@ -1,0 +1,12 @@
+{
+  "enabled": false,
+  "days": [
+    "mon",
+    "tue",
+    "wed",
+    "thu",
+    "fri"
+  ],
+  "time": "09:59",
+  "dry_run": false
+}

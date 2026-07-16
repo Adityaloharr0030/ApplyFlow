@@ -73,6 +73,26 @@ def _wait_for_xpath(driver, xpath: str, timeout: int = 5):
         return None
 
 
+def _click_element(driver, element) -> bool:
+    """Click the element with mouse-like behavior and script fallback."""
+    from selenium.webdriver import ActionChains
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", element)
+        actions = ActionChains(driver)
+        actions.move_to_element(element).pause(0.1).click(element).perform()
+        return True
+    except Exception:
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", element)
+            driver.execute_script(
+                "const ev = new MouseEvent('click', { bubbles: true, cancelable: true, view: window }); arguments[0].dispatchEvent(ev);",
+                element,
+            )
+            return True
+        except Exception:
+            return False
+
+
 def _login_internshala(driver) -> bool:
     email = os.getenv("INTERNSHALA_EMAIL", "")
     password = os.getenv("INTERNSHALA_PASSWORD", "")
@@ -259,9 +279,14 @@ def apply_internshala(listing: dict, cover_note: str, profile: dict) -> dict:
             }
 
         logger.info(f"  Found Apply button via: {matched_sel}")
-        driver.execute_script("arguments[0].scrollIntoView(true);", apply_btn)
-        time.sleep(0.5)
-        apply_btn.click()
+        if not _click_element(driver, apply_btn):
+            logger.warning("  ⚠️ Apply button click fallback failed — attempting direct click")
+            try:
+                apply_btn.click()
+            except Exception as e:
+                _save_screenshot(driver, "3_FAIL_click_apply")
+                return {"success": False, "message": f"Could not click Apply button: {e}. Check screenshot 3_FAIL_click_apply.png."}
+
         time.sleep(3)
         _save_screenshot(driver, "3_after_apply_click")
         logger.info("  ✅ Clicked Apply button")

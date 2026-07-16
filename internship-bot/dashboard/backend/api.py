@@ -20,16 +20,20 @@ Endpoints:
   WS   /ws/live             — Real-time event stream
 """
 
-from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import os
 import json
+import re
 import subprocess
+import threading
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 app = FastAPI(title="ApplyFlow Dashboard API", version="2.0.0")
 
@@ -45,6 +49,20 @@ BASE_DIR = Path(__file__).parent.parent.parent
 LOGS_DIR = BASE_DIR / "logs"
 CSV_FILE = LOGS_DIR / "applications.csv"
 SCHEDULES_FILE = BASE_DIR / "data" / "schedules.json"
+SCHEDULE_CONFIG_FILE = Path(__file__).parent / "schedule_config.json"
+VALID_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+DEFAULT_SCHEDULE_CONFIG = {
+    "enabled": False,
+    "days": ["mon", "tue", "wed", "thu", "fri"],
+    "time": "09:00",
+    "dry_run": True,
+}
+TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
+scheduler = BackgroundScheduler()
+current_process: Optional[subprocess.Popen] = None
+current_process_started_at: Optional[datetime] = None
+current_process_lock = threading.Lock()
 
 # ── Session State ──────────────────────────────────────────────────────────────
 # Shared state for live session tracking
@@ -132,6 +150,201 @@ def save_schedules(schedules: list):
     except Exception as e:
         raise Exception(f"Failed to save schedules: {e}")
 
+def load_schedule_config() -> dict:
+    try:
+        if SCHEDULE_CONFIG_FILE.exists():
+            with open(SCHEDULE_CONFIG_FILE, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                if isinstance(config, dict):
+                    return {**DEFAULT_SCHEDULE_CONFIG, **config}
+    except Exception:
+        pass
+    return DEFAULT_SCHEDULE_CONFIG.copy()
+
+
+def save_schedule_config(config: dict):
+    try:
+        SCHEDULE_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(SCHEDULE_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+    except Exception as e:
+        raise Exception(f"Failed to save schedule config: {e}")
+
+
+def clean_dataframe_for_json(df: pd.DataFrame) -> pd.DataFrame:
+    """Replace NaN values and datetime types so JSON serialization succeeds."""
+    df = df.copy()
+    df = df.where(pd.notnull(df), None)
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].apply(lambda v: v.isoformat() if v is not None else None)
+    return df
+
+
+def validate_schedule_config(config: dict) -> dict:
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=400, detail="Schedule config must be an object.")
+
+    enabled = bool(config.get("enabled", False))
+    dry_run = bool(config.get("dry_run", True))
+    days = config.get("days")
+    time_str = config.get("time")
+
+    if not isinstance(days, list) or not days:
+        raise HTTPException(status_code=400, detail="Days must be a non-empty list of weekday codes.")
+
+    normalized_days = []
+    for item in days:
+        if not isinstance(item, str):
+            raise HTTPException(status_code=400, detail="Each day code must be a string.")
+        normalized = item.strip().lower()[:3]
+        if normalized not in VALID_WEEKDAYS:
+            raise HTTPException(status_code=400, detail=f"Invalid weekday code: {item}")
+        normalized_days.append(normalized)
+
+    if not isinstance(time_str, str) or not TIME_PATTERN.match(time_str):
+        raise HTTPException(status_code=400, detail="Time must be a string in HH:MM 24h format.")
+
+    return {
+        "enabled": enabled,
+        "days": sorted(set(normalized_days), key=VALID_WEEKDAYS.index),
+        "time": time_str,
+        "dry_run": dry_run,
+    }
+
+
+def get_next_scheduled_run() -> Optional[str]:
+    if not scheduler.running or not scheduler.get_jobs():
+        return None
+    next_fire_times = [job.next_run_time for job in scheduler.get_jobs() if job.next_run_time is not None]
+    if not next_fire_times:
+        return None
+    next_dt = min(next_fire_times)
+    if next_dt.tzinfo is not None:
+        next_dt = next_dt.astimezone()
+    return next_dt.isoformat()
+
+
+def get_schedule_status() -> dict:
+    config = load_schedule_config()
+    return {
+        "enabled": config["enabled"],
+        "days": config["days"],
+        "time": config["time"],
+        "dry_run": config["dry_run"],
+        "next_run": get_next_scheduled_run() if config["enabled"] else None,
+    }
+
+
+def spawn_bot_process(dry_run: bool):
+    global current_process, current_process_started_at
+    with current_process_lock:
+        if current_process is not None and current_process.poll() is None:
+            return False
+
+        cmd = ["python", "main.py", "--run-now"]
+        if dry_run:
+            cmd.append("--dry-run")
+
+        env = os.environ.copy()
+        env["DRY_RUN"] = "true" if dry_run else "false"
+
+        current_process = subprocess.Popen(cmd, cwd=BASE_DIR, env=env)
+        current_process_started_at = datetime.now()
+        session_state["status"] = "running"
+        session_state["started_at"] = current_process_started_at.isoformat()
+        session_state["applied_count"] = 0
+        session_state["skipped_count"] = 0
+        session_state["error_count"] = 0
+        session_state["current_listing"] = None
+        session_state["current_step"] = None
+
+        def wait_and_clear():
+            global current_process, current_process_started_at
+            if current_process is None:
+                return
+            try:
+                current_process.wait()
+            finally:
+                with current_process_lock:
+                    current_process = None
+                    current_process_started_at = None
+                    session_state["status"] = "idle"
+                    session_state["current_listing"] = None
+                    session_state["current_step"] = None
+
+        thread = threading.Thread(target=wait_and_clear, daemon=True)
+        thread.start()
+        return True
+
+
+def stop_bot_process() -> bool:
+    global current_process, current_process_started_at
+    with current_process_lock:
+        if current_process is None or current_process.poll() is not None:
+            current_process = None
+            current_process_started_at = None
+            return False
+
+        current_process.terminate()
+        try:
+            current_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            current_process.kill()
+            current_process.wait()
+        current_process = None
+        current_process_started_at = None
+        session_state["status"] = "idle"
+        session_state["current_listing"] = None
+        session_state["current_step"] = None
+        return True
+
+
+def clear_schedule_jobs():
+    for job in scheduler.get_jobs():
+        scheduler.remove_job(job.id)
+
+
+def schedule_jobs_from_config(config: dict):
+    clear_schedule_jobs()
+    if not config.get("enabled", False):
+        return
+
+    hour, minute = map(int, config["time"].split(":"))
+    for day in config["days"]:
+        trigger = CronTrigger(day_of_week=day, hour=hour, minute=minute)
+        scheduler.add_job(
+            func=scheduled_run,
+            trigger=trigger,
+            id=f"applyflow_{day}_{config['time']}",
+            replace_existing=True,
+            name=f"ApplyFlow schedule {day} {config['time']}",
+        )
+
+
+def scheduled_run():
+    config = load_schedule_config()
+    with current_process_lock:
+        if current_process is not None and current_process.poll() is None:
+            print("[scheduler] Skipping scheduled run because bot is already running")
+            return
+    spawned = spawn_bot_process(dry_run=config.get("dry_run", True))
+    if spawned:
+        print(f"[scheduler] Triggered scheduled bot run at {datetime.now().isoformat()}")
+    else:
+        print(f"[scheduler] Skipped scheduled bot run at {datetime.now().isoformat()} because another run is active")
+
+
+@app.on_event("startup")
+def startup_scheduler():
+    config = load_schedule_config()
+    if not SCHEDULE_CONFIG_FILE.exists():
+        save_schedule_config(config)
+    schedule_jobs_from_config(config)
+    if not scheduler.running:
+        scheduler.start()
+    print(f"[api] Scheduler started; enabled={config.get('enabled')} next_run={get_next_scheduled_run()}")
+
 
 # ── API Endpoints ──────────────────────────────────────────────────────────────
 
@@ -153,9 +366,9 @@ def get_stats():
         # Platform breakdown
         platforms = {}
         if "Platform" in df.columns:
-            platforms = df["Platform"].value_counts().to_dict()
+            platforms = {str(k): int(v) for k, v in df["Platform"].value_counts().to_dict().items()}
         elif "Source" in df.columns:
-            platforms = df["Source"].value_counts().to_dict()
+            platforms = {str(k): int(v) for k, v in df["Source"].value_counts().to_dict().items()}
 
         # Today's count
         today_applied = 0
@@ -171,13 +384,13 @@ def get_stats():
             success_rate = round((successes / total * 100) if total > 0 else 0, 1)
 
         # Recent applications
-        recent = df.tail(10).to_dict(orient="records")[::-1]
+        recent = clean_dataframe_for_json(df.tail(10)).to_dict(orient="records")[::-1]
 
         return {
-            "total_applied": len(df),
-            "today_applied": today_applied,
+            "total_applied": int(len(df)),
+            "today_applied": int(today_applied),
             "platforms": platforms,
-            "success_rate": success_rate,
+            "success_rate": float(success_rate),
             "recent": recent,
             "session": session_state,
         }
@@ -192,6 +405,7 @@ def get_applications():
     if df.empty:
         return []
     try:
+        df = clean_dataframe_for_json(df)
         return df.to_dict(orient="records")[::-1]
     except Exception:
         return []
@@ -233,14 +447,14 @@ def get_history(
         df = df.iloc[::-1]
         start = (page - 1) * per_page
         end = start + per_page
-        items = df.iloc[start:end].to_dict(orient="records")
+        items = clean_dataframe_for_json(df.iloc[start:end]).to_dict(orient="records")
 
         return {
             "items": items,
-            "total": total,
-            "page": page,
-            "per_page": per_page,
-            "total_pages": (total + per_page - 1) // per_page,
+            "total": int(total),
+            "page": int(page),
+            "per_page": int(per_page),
+            "total_pages": int((total + per_page - 1) // per_page),
         }
     except Exception as e:
         return {"error": str(e)}
@@ -269,46 +483,55 @@ def get_session_live():
 
 @app.get("/api/schedule")
 def get_schedule():
-    """Get all configured schedules."""
-    return load_schedules()
+    """Get the current schedule config."""
+    return get_schedule_status()
 
 
 @app.post("/api/schedule")
-def update_schedule(schedules: list):
-    """Update/replace all schedules."""
+def update_schedule(config: dict):
+    """Update the persistent schedule config and reschedule jobs."""
+    config = validate_schedule_config(config)
     try:
-        save_schedules(schedules)
-        return {"message": "Schedules updated successfully", "count": len(schedules)}
+        save_schedule_config(config)
+        schedule_jobs_from_config(config)
+        return {"message": "Schedule saved successfully", "schedule": config}
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/status")
+def get_status():
+    running = current_process is not None and current_process.poll() is None
+    return {
+        "is_running": running,
+        "started_at": current_process_started_at.isoformat() if current_process_started_at else None,
+        "next_run": get_next_scheduled_run() if load_schedule_config().get("enabled", False) else None,
+        "schedule_enabled": load_schedule_config().get("enabled", False),
+    }
 
 
 @app.post("/api/start")
-def start_bot(background_tasks: BackgroundTasks, platform: Optional[str] = None):
+def start_bot(platform: Optional[str] = None, dry_run: Optional[bool] = None):
     """Start the bot in the background."""
-    if session_state["status"] == "running":
-        return {"message": "Bot is already running."}
+    if current_process is not None and current_process.poll() is None:
+        return {"message": "Already running", "already_running": True}
 
-    def run_bot():
-        session_state["status"] = "running"
-        session_state["started_at"] = datetime.now().isoformat()
-        session_state["applied_count"] = 0
-        session_state["skipped_count"] = 0
-        session_state["error_count"] = 0
+    # Manual starts should default to live mode unless explicitly overridden.
+    if dry_run is None:
+        dry_run = False
 
-        cmd = ["python", "main.py", "--run-now"]
-        if platform:
-            cmd.extend(["--platform", platform])
+    spawned = spawn_bot_process(dry_run=dry_run)
+    if not spawned:
+        return {"message": "Already running", "already_running": True}
+    return {"message": "Bot started", "already_running": False}
 
-        try:
-            subprocess.run(cmd, cwd=BASE_DIR)
-        finally:
-            session_state["status"] = "idle"
-            session_state["current_listing"] = None
-            session_state["current_step"] = None
 
-    background_tasks.add_task(run_bot)
-    return {"message": f"Bot started in the background{f' (platform: {platform})' if platform else ''}."}
+@app.post("/api/stop")
+def stop_bot():
+    """Stop a running bot process."""
+    if stop_bot_process():
+        return {"message": "Bot stopped", "stopped": True}
+    return {"message": "No running process", "stopped": False}
 
 
 @app.post("/api/session/pause")

@@ -261,6 +261,141 @@ body {
 
 .btn-danger:hover { background: rgba(239, 68, 68, 0.2); }
 
+.schedule-config-card {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.schedule-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.schedule-status {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.section-label {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.switch-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.switch-row input {
+  width: 1rem;
+  height: 1rem;
+}
+
+.schedule-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.day-chip {
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.03);
+  color: var(--text-primary);
+  border-radius: 9999px;
+  padding: 0.55rem 0.85rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.day-chip.active {
+  background: var(--accent);
+  border-color: rgba(99, 102, 241, 0.4);
+  color: white;
+}
+
+.schedule-grid-compact {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.time-input {
+  width: 100%;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--card-border);
+  color: var(--text-primary);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+
+.schedule-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.page-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 9999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  background: rgba(255,255,255,0.03);
+}
+
+.status-pill.running {
+  color: var(--success);
+}
+
+.status-pill.idle {
+  color: var(--text-secondary);
+}
+
+.btn-secondary {
+  background: transparent;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-secondary:hover {
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.btn-danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.btn-danger:hover {
+  background: rgba(239, 68, 68, 0.2);
+}
+
 .btn-warning {
   background: var(--warning-bg);
   color: var(--warning);
@@ -594,6 +729,7 @@ body {
 @media (max-width: 1024px) {
   .stats-grid { grid-template-columns: repeat(3, 1fr); }
   .live-session-card { grid-template-columns: 1fr; }
+  .schedule-grid-compact { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 768px) {
@@ -601,4 +737,5 @@ body {
   .main-content { margin-left: 0; padding: 1rem; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .page-header { flex-direction: column; align-items: flex-start; gap: 1rem; }
+  .schedule-grid-compact { grid-template-columns: 1fr; }
 }

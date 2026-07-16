@@ -46,19 +46,22 @@ function Sidebar({ activePage, setActivePage, session }) {
 }
 
 // ── Overview Page ───────────────────────────────────────────────────────────
-function OverviewPage({ stats, session, events, onStart, onPause, onResume }) {
+function OverviewPage({ stats, session, runStatus, events, onStart, onStop }) {
   return (
     <>
       <div className="page-header">
         <div>
-          <h2>Dashboard</h2>
+          <div className="page-title-row">
+            <h2>Dashboard</h2>
+            <span className={`status-pill ${runStatus.is_running ? 'running' : 'idle'}`}>
+              ● {runStatus.is_running ? 'Running' : 'Idle'}
+            </span>
+          </div>
           <p className="subtitle">Real-time overview of your automated applications</p>
         </div>
         <div className="header-actions">
-          {session.status === 'running' ? (
-            <button className="btn btn-warning" onClick={onPause}>⏸ Pause</button>
-          ) : session.status === 'paused' ? (
-            <button className="btn btn-success" onClick={onResume}>▶ Resume</button>
+          {runStatus.is_running ? (
+            <button className="btn btn-danger" onClick={onStop}>⏹ Stop Bot</button>
           ) : (
             <button className="btn btn-primary" onClick={onStart}>🚀 Launch Bot</button>
           )}
@@ -315,7 +318,32 @@ function ApplicationsPage({ applications }) {
 }
 
 // ── Schedule Page ───────────────────────────────────────────────────────────
-function SchedulePage({ schedules }) {
+function SchedulePage({ scheduleConfig, onScheduleChange, onSaveSchedule, runStatus }) {
+  const daysOfWeek = [
+    { label: 'Mon', value: 'mon' },
+    { label: 'Tue', value: 'tue' },
+    { label: 'Wed', value: 'wed' },
+    { label: 'Thu', value: 'thu' },
+    { label: 'Fri', value: 'fri' },
+    { label: 'Sat', value: 'sat' },
+    { label: 'Sun', value: 'sun' },
+  ]
+
+  const toggleDay = (day) => {
+    const nextDays = scheduleConfig.days.includes(day)
+      ? scheduleConfig.days.filter((d) => d !== day)
+      : [...scheduleConfig.days, day].sort((a, b) => daysOfWeek.findIndex((item) => item.value === a) - daysOfWeek.findIndex((item) => item.value === b))
+    onScheduleChange({ ...scheduleConfig, days: nextDays })
+  }
+
+  const setTime = (value) => onScheduleChange({ ...scheduleConfig, time: value })
+  const setDryRun = (value) => onScheduleChange({ ...scheduleConfig, dry_run: value })
+  const setEnabled = (value) => onScheduleChange({ ...scheduleConfig, enabled: value })
+
+  const save = async () => {
+    await onSaveSchedule(scheduleConfig)
+  }
+
   return (
     <>
       <div className="page-header">
@@ -325,33 +353,67 @@ function SchedulePage({ schedules }) {
         </div>
       </div>
 
-      {schedules.length === 0 ? (
-        <div className="glass-card">
-          <div className="empty-state">
-            <div className="icon">📅</div>
-            <div className="title">No Schedules Configured</div>
-            <div className="desc">Edit <code>data/schedules.json</code> to add platform schedules.</div>
+      <div className="glass-card schedule-config-card">
+        <div className="schedule-row">
+          <div>
+            <div className="section-label">Scheduled runs</div>
+            <label className="switch-row">
+              <input
+                type="checkbox"
+                checked={scheduleConfig.enabled}
+                onChange={(e) => setEnabled(e.target.checked)}
+              />
+              <span>{scheduleConfig.enabled ? 'Enabled' : 'Disabled'}</span>
+            </label>
+          </div>
+          <div className="schedule-status">
+            Next run: {runStatus.schedule_enabled ? (runStatus.next_run ? new Date(runStatus.next_run).toLocaleString() : 'Calculating...') : 'Not scheduled'}
           </div>
         </div>
-      ) : (
-        <div className="schedule-grid">
-          {schedules.map((s, idx) => (
-            <div key={idx} className="glass-card schedule-card">
-              <div className="schedule-header">
-                <span className={`platform-badge platform-${s.platform}`}>
-                  {s.platform}
-                </span>
-                <div className={`toggle-switch ${s.enabled !== false ? 'active' : ''}`} />
-              </div>
-              <div className="schedule-time">{s.time}</div>
-              <div className="schedule-meta">
-                <div>📆 {s.days || 'daily'}</div>
-                <div>⏱ {s.runtime_minutes || 30} min runtime</div>
-              </div>
-            </div>
+
+        <div className="schedule-chip-row">
+          {daysOfWeek.map((day) => (
+            <button
+              key={day.value}
+              type="button"
+              className={`day-chip ${scheduleConfig.days.includes(day.value) ? 'active' : ''}`}
+              onClick={() => toggleDay(day.value)}
+            >
+              {day.label}
+            </button>
           ))}
         </div>
-      )}
+
+        <div className="schedule-grid-compact">
+          <label className="field-group">
+            <span className="section-label">Run time</span>
+            <input
+              type="time"
+              className="time-input"
+              value={scheduleConfig.time}
+              onChange={(e) => setTime(e.target.value)}
+            />
+          </label>
+
+          <label className="field-group">
+            <span className="section-label">Dry run</span>
+            <label className="switch-row">
+              <input
+                type="checkbox"
+                checked={scheduleConfig.dry_run}
+                onChange={(e) => setDryRun(e.target.checked)}
+              />
+              <span>{scheduleConfig.dry_run ? 'On' : 'Off'}</span>
+            </label>
+          </label>
+        </div>
+
+        <div className="schedule-actions">
+          <button className="btn btn-secondary" type="button" onClick={save}>
+            Save schedule
+          </button>
+        </div>
+      </div>
     </>
   )
 }
@@ -405,7 +467,8 @@ function App() {
   const [session, setSession] = useState({ status: 'idle', applied_count: 0, skipped_count: 0, error_count: 0, events: [] })
   const [applications, setApplications] = useState([])
   const [logs, setLogs] = useState([])
-  const [schedules, setSchedules] = useState([])
+  const [scheduleConfig, setScheduleConfig] = useState({ enabled: false, days: ['mon', 'tue', 'wed', 'thu', 'fri'], time: '09:00', dry_run: true })
+  const [runStatus, setRunStatus] = useState({ is_running: false, started_at: null, next_run: null, schedule_enabled: false })
   const [events, setEvents] = useState([])
   const wsRef = useRef(null)
 
@@ -440,14 +503,24 @@ function App() {
     } catch (err) { console.debug('Logs fetch failed:', err) }
   }, [])
 
-  const fetchSchedules = useCallback(async () => {
+  const fetchScheduleConfig = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/schedule`)
       if (res.ok) {
         const data = await res.json()
-        setSchedules(Array.isArray(data) ? data : [])
+        setScheduleConfig(data)
       }
-    } catch (err) { console.debug('Schedules fetch failed:', err) }
+    } catch (err) { console.debug('Schedule fetch failed:', err) }
+  }, [])
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/status`)
+      if (res.ok) {
+        const data = await res.json()
+        setRunStatus(data)
+      }
+    } catch (err) { console.debug('Status fetch failed:', err) }
   }, [])
 
   const fetchSession = useCallback(async () => {
@@ -496,22 +569,25 @@ function App() {
   useEffect(() => {
     fetchStats()
     fetchSession()
-    fetchSchedules()
+    fetchScheduleConfig()
+    fetchStatus()
 
     const statsInterval = setInterval(fetchStats, 3000)
     const sessionInterval = setInterval(fetchSession, 2000)
+    const statusInterval = setInterval(fetchStatus, 2000)
 
     return () => {
       clearInterval(statsInterval)
       clearInterval(sessionInterval)
+      clearInterval(statusInterval)
     }
-  }, [fetchStats, fetchSession, fetchSchedules])
+  }, [fetchStats, fetchSession, fetchScheduleConfig, fetchStatus])
 
   // Fetch page-specific data when page changes
   useEffect(() => {
     if (activePage === 'applications') fetchApplications()
     if (activePage === 'logs') fetchLogs()
-    if (activePage === 'schedule') fetchSchedules()
+    if (activePage === 'schedule') fetchScheduleConfig()
 
     let interval
     if (activePage === 'logs') {
@@ -521,36 +597,49 @@ function App() {
     }
 
     return () => interval && clearInterval(interval)
-  }, [activePage, fetchApplications, fetchLogs, fetchSchedules])
+  }, [activePage, fetchApplications, fetchLogs, fetchScheduleConfig])
 
-  const handleStart = async (platform) => {
+  const handleStart = async () => {
     try {
-      const url = platform ? `${API_BASE}/api/start?platform=${platform}` : `${API_BASE}/api/start`
-      const res = await fetch(url, { method: 'POST' })
+      const res = await fetch(`${API_BASE}/api/start`, { method: 'POST' })
       const data = await res.json()
-      if (data.message?.includes('already')) {
+      if (data.already_running) {
         alert('⚠️ Bot is already running!')
-      } else {
-        setSession(prev => ({ ...prev, status: 'running' }))
-        fetchSession()
       }
+      fetchStatus()
+      fetchSession()
     } catch (err) {
       alert('❌ Failed to start bot. Is the dashboard API running?')
     }
   }
 
-  const handlePause = async () => {
+  const handleStop = async () => {
     try {
-      await fetch(`${API_BASE}/api/session/pause`, { method: 'POST' })
-      setSession(prev => ({ ...prev, status: 'paused' }))
-    } catch (err) { console.error('Pause failed:', err) }
+      await fetch(`${API_BASE}/api/stop`, { method: 'POST' })
+      fetchStatus()
+      fetchSession()
+    } catch (err) {
+      console.error('Stop failed:', err)
+    }
   }
 
-  const handleResume = async () => {
+  const handleSaveSchedule = async (config) => {
     try {
-      await fetch(`${API_BASE}/api/session/resume`, { method: 'POST' })
-      setSession(prev => ({ ...prev, status: 'running' }))
-    } catch (err) { console.error('Resume failed:', err) }
+      const res = await fetch(`${API_BASE}/api/schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setScheduleConfig(data.schedule)
+        fetchStatus()
+        return true
+      }
+    } catch (err) {
+      console.error('Save schedule failed:', err)
+    }
+    return false
   }
 
   return (
@@ -563,13 +652,20 @@ function App() {
             stats={stats}
             session={session}
             events={events}
-            onStart={() => handleStart()}
-            onPause={handlePause}
-            onResume={handleResume}
+            runStatus={runStatus}
+            onStart={handleStart}
+            onStop={handleStop}
           />
         )}
         {activePage === 'applications' && <ApplicationsPage applications={applications} />}
-        {activePage === 'schedule' && <SchedulePage schedules={schedules} />}
+        {activePage === 'schedule' && (
+          <SchedulePage
+            scheduleConfig={scheduleConfig}
+            onScheduleChange={setScheduleConfig}
+            onSaveSchedule={handleSaveSchedule}
+            runStatus={runStatus}
+          />
+        )}
         {activePage === 'logs' && <LogsPage logs={logs} />}
       </main>
     </div>
