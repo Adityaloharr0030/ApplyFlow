@@ -193,38 +193,41 @@ def send_summary(applied: list, skipped: int, errors: int, manual: list = None):
         logger.error(f"  ✗ WhatsApp notification failed: {e}")
 
 def run_pipeline(platform_filter: str = None):
+    """
+    Orchestrates the full ApplyFlow pipeline via four independent stages:
+      1. Discover  — scrape, deduplicate, filter already-applied
+      2. Score     — AI scoring / filtering
+      3. Apply     — browser-based submission
+      4. Notify    — summary notifications
+
+    Each stage lives in its own module under pipeline/ and is independently
+    testable without needing a browser or live API keys.
+    """
     logger = logging.getLogger("main")
 
     logger.info("=" * 60)
-    logger.info("🤖 INTERNSHIP AUTOMATION BOT — Starting pipeline")
-    logger.info(f"📅 Date: {datetime.now().strftime('%A, %d %B %Y at %H:%M')}")
+    logger.info("[Pipeline] ApplyFlow starting | date=%s", datetime.now().strftime("%A, %d %B %Y at %H:%M"))
     logger.info("=" * 60)
-    
-    # Reset sheets cache so we re-try the connection if it failed previously
-    reset_sheets_cache()
 
+    # ── Bootstrap ──────────────────────────────────────────────────────────────
+    reset_sheets_cache()
     profile = load_profile()
     validate_env(logger)
-    logger.info(f"👤 Candidate: {profile.get('name', 'Unknown')}")
-    logger.info(f"🔑 Keywords: {', '.join(profile.get('keywords', []))}")
+    logger.info("[Pipeline] Candidate: %s | keywords: %s",
+                profile.get("name", "Unknown"),
+                ", ".join(profile.get("keywords", [])))
 
-    # 🔑 Reset AI key states for fresh run
     from agent.ai_client import reset_exhausted_keys
     reset_exhausted_keys()
 
-    # 🧠 Initialize Resume Brain
-    logger.info("\n" + "━" * 50)
-    logger.info("🧠 STEP 0: Initializing AI Resume Brain…")
-    logger.info("━" * 50)
+    # ── Resume Brain sync ──────────────────────────────────────────────────────
     try:
+        from agent.resume_brain import get_resume_context
         resume_ctx = get_resume_context()
-        logger.info(f"  → Active Context: {resume_ctx.name}")
-        logger.info(f"  → Extracted Skills: {len(resume_ctx.skills)}")
-        logger.info(f"  → Extracted Projects: {len(resume_ctx.projects)}")
-        
-        # Sync profile.json
+        logger.info("[Pipeline] Resume Brain: %s | skills=%d | projects=%d",
+                    resume_ctx.name, len(resume_ctx.skills), len(resume_ctx.projects))
         if resume_ctx.name:
-            profile["skills"] = resume_ctx.skills
+            profile["skills"]   = resume_ctx.skills
             profile["projects"] = [
                 f"{p.get('name')} ({', '.join(p.get('techs', []))})"
                 for p in resume_ctx.projects
@@ -233,245 +236,51 @@ def run_pipeline(platform_filter: str = None):
                 profile["achievement"] = resume_ctx.achievements[0]
             with open(PROFILE_PATH, "w", encoding="utf-8") as f:
                 json.dump(profile, f, indent=2, ensure_ascii=False)
-            logger.info("  → Synced profile.json with Resume Brain data")
-            
-    except Exception as e:
-        logger.error(f"  ✗ Resume Brain init failed: {e}")
+            logger.info("[Pipeline] Synced profile.json with Resume Brain")
+    except Exception as exc:
+        logger.error("[Pipeline] Resume Brain init failed: %s", exc)
 
-    applied_listings: list[dict] = []
-    manual_listings: list[dict] = []
-    dry_run_listings: list[dict] = []
-    skipped_count = 0
-    error_count = 0
-
-    platforms = {
-        "internshala": InternshalaPlatform(),
-        "linkedin": LinkedInPlatform(),
-        "indeed": IndeedPlatform(),
-        "unstop": UnstopPlatform(),
-        "naukri": NaukriPlatform(),
-        "generic_web": GenericWebPlatform(),
-    }
-
-    # PLATFORM LIMITS
-    caps = {
-        "internshala": int(os.getenv("INTERNSHALA_MAX_APPLIES", "15")),
-        "linkedin": int(os.getenv("LINKEDIN_MAX_APPLIES", "10")),
-        "indeed": int(os.getenv("INDEED_MAX_APPLIES", "10")),
-        "unstop": int(os.getenv("UNSTOP_MAX_APPLIES", "15")),
-        "naukri": int(os.getenv("NAUKRI_MAX_APPLIES", "15")),
-        "generic_web": 20
-    }
-    platform_applied_counts = {k: 0 for k in platforms.keys()}
-
-    # 1. SEARCH
-    logger.info("\n" + "━" * 50)
-    logger.info("📡 STEP 1: Scraping listings…")
-    logger.info("━" * 50)
-
-    all_listings: list[dict] = []
-    for name, platform in platforms.items():
-        # Skip platforms not matching the filter
-        if platform_filter and name != platform_filter:
-            continue
-        try:
-            logger.info(f"\n🔍 Scraping {name.capitalize()}…")
-            results = platform.search(profile)
-            all_listings.extend(results)
-            logger.info(f"  → Got {len(results)} listing(s) from {name.capitalize()}")
-        except Exception as e:
-            logger.error(f"  ✗ {name.capitalize()} scraper crashed: {e}")
-            error_count += 1
-
-    logger.info(f"\n📊 Total raw listings: {len(all_listings)}")
-
-    if not all_listings:
-        logger.warning("⚠️ No listings found — ending pipeline early")
-        send_summary(applied_listings, skipped_count, error_count)
-        return
-
-    # 2. DEDUPLICATE
-    logger.info("\n" + "━" * 50)
-    logger.info("♻️  STEP 2: Deduplicating listings…")
-    logger.info("━" * 50)
-    unique_listings = deduplicate(all_listings)
-    dupes = len(all_listings) - len(unique_listings)
-    if dupes > 0:
-        logger.info(f"  Removed {dupes} duplicate(s)")
-    logger.info(f"  → {len(unique_listings)} unique listing(s)")
-
-    # 3. FILTER ALREADY APPLIED
-    logger.info("\n" + "━" * 50)
-    logger.info("🔎 STEP 3: Filtering already-applied listings…")
-    logger.info("━" * 50)
-    new_listings: list[dict] = []
-    applied_cache = get_applied_urls()
-    for listing in unique_listings:
-        url = listing.get("apply_url", "")
-        if url and url.strip() in applied_cache:
-            skipped_count += 1
-        else:
-            new_listings.append(listing)
-    logger.info(f"  → {len(new_listings)} new listing(s) to evaluate")
+    # ── Stage 1: Discover ──────────────────────────────────────────────────────
+    logger.info("[Pipeline] Stage 1/4: Discover")
+    from pipeline.discover import run_discover
+    new_listings, skipped_discover = run_discover(profile, platform_filter)
 
     if not new_listings:
-        logger.info("✅ All listings already applied to — nothing new today")
-        send_summary(applied_listings, skipped_count, error_count, manual_listings)
+        logger.warning("[Pipeline] No new listings found — ending pipeline early")
+        from pipeline.notify import run_notify
+        run_notify([], [], skipped_discover, 0)
         return
 
-    # 4. AI SCORING
-    logger.info("\n" + "━" * 50)
-    logger.info("🧠 STEP 4: Scoring listings…")
-    logger.info("━" * 50)
-    try:
-        approved_listings = filter_listings(new_listings, profile)
-        skipped_count += len(new_listings) - len(approved_listings)
-    except Exception as e:
-        logger.error(f"  ✗ AI filter crashed: {e}")
-        error_count += 1
-        approved_listings = []
+    # ── Stage 2: Score ─────────────────────────────────────────────────────────
+    logger.info("[Pipeline] Stage 2/4: Score")
+    from pipeline.score import run_score
+    approved, skipped_score = run_score(new_listings, profile)
+    total_skipped = skipped_discover + skipped_score
 
-    logger.info(f"  → {len(approved_listings)} listing(s) approved for application")
-
-    if not approved_listings:
-        logger.info("ℹ️ No listings scored high enough to apply — done for today")
-        send_summary(applied_listings, skipped_count, error_count, manual_listings)
+    if not approved:
+        logger.info("[Pipeline] No listings scored high enough — done for today")
+        from pipeline.notify import run_notify
+        run_notify([], [], total_skipped, 0)
         return
 
-    # Group by platform to reuse driver per platform efficiently
-    grouped = defaultdict(list)
-    for listing in approved_listings:
-        grouped[listing.get("source")].append(listing)
+    # ── Stage 3: Apply ─────────────────────────────────────────────────────────
+    logger.info("[Pipeline] Stage 3/4: Apply (%d listing(s))", len(approved))
+    from pipeline.apply import run_apply
+    applied, manual, dry_run, error_count = run_apply(approved, profile, platform_filter)
 
-    # 5. APPLY
-    logger.info("\n" + "━" * 50)
-    logger.info("🚀 STEP 5: Applying to approved listings…")
-    logger.info("━" * 50)
+    # ── Stage 4: Notify ────────────────────────────────────────────────────────
+    logger.info("[Pipeline] Stage 4/4: Notify")
+    from pipeline.notify import run_notify
+    run_notify(applied, manual, total_skipped, error_count)
 
-    driver = create_driver()
-    if driver is None:
-        logger.error("  ✗ CRITICAL ERROR: Failed to launch Chrome browser. Aborting apply phase.")
-        logger.error("  💡 Tip: Make sure Chrome is installed and fully closed before running.")
-        send_summary(applied_listings, skipped_count, error_count, manual_listings)
-        return
-    
-    # Login to platforms before applying
-    is_dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
-    logged_in_platforms: set[str] = set()
-
-    if not is_dry_run:
-        logger.info("\n🔐 Logging into platforms...")
-        for source_name in grouped.keys():
-            login_fn = LOGIN_HANDLERS.get(source_name)
-            if login_fn:
-                try:
-                    success = login_fn(driver)
-                    if success:
-                        logged_in_platforms.add(source_name)
-                    else:
-                        logger.warning(f"  ⚠️ Could not login to {source_name} — will skip its applications")
-                except Exception as e:
-                    logger.error(f"  ✗ Login to {source_name} crashed: {e}")
-            else:
-                # Platforms without login requirements (indeed, generic_web)
-                logged_in_platforms.add(source_name)
-    else:
-        # In dry run mode, mark all platforms as "logged in" (they won't actually apply)
-        logged_in_platforms = set(grouped.keys())
-
-    try:
-        for source_name, listings in grouped.items():
-            platform = platforms.get(source_name)
-            if not platform:
-                continue
-
-            # Skip platforms we couldn't log into (unless dry run)
-            if source_name not in logged_in_platforms:
-                logger.warning(f"  ⏭ Skipping {source_name} — not logged in")
-                skipped_count += len(listings)
-                continue
-
-            for listing in listings:
-                if platform.check_circuit_breaker():
-                    logger.warning(f"  ⚠️ Skipping {source_name} due to circuit breaker")
-                    fire_instant_notification(source_name, listing, True, "Circuit breaker tripped (blocked).")
-                    break
-
-                if platform_applied_counts[source_name] >= caps.get(source_name, 10):
-                    logger.info(f"  🛑 Daily cap reached for {source_name} ({caps.get(source_name)})")
-                    break
-
-                company = listing.get("company", "Unknown")
-                title = listing.get("title", "N/A")
-                logger.info(f"\n── {title} @ {company} ({source_name}) ──")
-
-                try:
-                    cover_note = generate_cover_note(listing, profile)
-                except Exception as e:
-                    logger.error(f"  ✗ Cover note generation failed: {e}")
-                    cover_note = ""
-
-                try:
-                    result = platform.apply(listing, cover_note, profile, driver)
-                except Exception as e:
-                    result = {"success": False, "message": str(e)}
-
-                if result.get("success"):
-                    msg = result.get("message", "").lower()
-                    if "dry run" in msg:
-                        # DRY RUN: do NOT count as real application
-                        dry_run_listings.append(listing)
-                        status = "Dry Run"
-                        logger.info(f"  🧪 {result.get('message')}")
-                    elif "manual" in msg or "pending" in msg:
-                        manual_listings.append(listing)
-                        status = "Pending (Manual)"
-                        logger.info(f"  ✅ {result.get('message')}")
-                    else:
-                        applied_listings.append(listing)
-                        status = "Applied"
-                        platform_applied_counts[source_name] += 1
-                        fire_instant_notification(source_name, listing)
-                        # Generate interview prep asynchronously or in background
-                        try:
-                            generate_interview_prep(listing, profile)
-                        except Exception as prep_e:
-                            logger.error(f"  ✗ Interview prep generation failed: {prep_e}")
-                        logger.info(f"  ✅ {result.get('message')}")
-                else:
-                    status = f"Error: {result.get('message')}"
-                    error_count += 1
-                    logger.warning(f"  ✗ {result.get('message')}")
-                    
-                    if "captcha" in status.lower() or "blocked" in status.lower():
-                        fire_instant_notification(source_name, listing, True, result.get('message'))
-
-                try:
-                    log_application(listing, status, cover_note)
-                except Exception as e:
-                    logger.error(f"  ✗ Failed to log application: {e}")
-
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
-
-    # 6. SUMMARY
-    logger.info("\n" + "━" * 50)
-    logger.info("📱 STEP 6: Sending summary notifications…")
-    logger.info("━" * 50)
-    send_summary(applied_listings, skipped_count, error_count, manual_listings)
-
-    logger.info("\n" + "=" * 60)
-    logger.info("🏁 PIPELINE COMPLETE")
-    logger.info(f"  ✅ Applied: {len(applied_listings)}")
-    if dry_run_listings:
-        logger.info(f"  🧪 Dry Run: {len(dry_run_listings)} (not actually submitted)")
-    logger.info(f"  ⏭  Skipped: {skipped_count}")
-    logger.info(f"  ❌ Errors:  {error_count}")
+    # ── Summary ────────────────────────────────────────────────────────────────
     logger.info("=" * 60)
+    logger.info("[Pipeline] COMPLETE | applied=%d, dry_run=%d, skipped=%d, errors=%d",
+                len(applied), len(dry_run), total_skipped, error_count)
+    logger.info("=" * 60)
+
+
+
 
 def debug_single_apply():
     """

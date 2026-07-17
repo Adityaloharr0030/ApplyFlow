@@ -40,6 +40,7 @@ class OutcomeContext:
     def __init__(self):
         self.total: int = 0
         self.applied_count: int = 0
+        self.callback_rate: float = 0.0          # % of submissions that got a callback
         self.good_title_keywords: list[str] = []   # title words associated with success
         self.bad_companies: set[str] = set()        # companies that always error-blocked
         self.bad_domains: set[str] = set()          # domains that always redirect externally
@@ -131,16 +132,43 @@ def build_outcome_context(days_back: int = 30) -> OutcomeContext:
     df["Source"] = df["Source"].fillna("").astype(str)
     df["Score"] = pd.to_numeric(df["Score"], errors="coerce").fillna(0)
 
-    # ── Identify successful applications ──
+    # ── Identify successful applications ──────────────────────────────────────
     applied_mask = df["Status"].str.contains("Applied|Success", case=False, na=False)
     applied_df = df[applied_mask]
     ctx.applied_count = len(applied_df)
 
-    if ctx.applied_count > 0:
-        ctx.good_title_keywords = _extract_title_keywords(applied_df["Role"].tolist())
-        ctx.avg_score_applied = float(applied_df["Score"].mean())
+    # Phase D fix: Prefer callback-confirmed applications for keyword learning.
+    # If a 'callback_date' column exists, learn exclusively from those rows
+    # (prevents the bot from optimising for "easy to submit" rather than "callback-likely").
+    if "Callback_Date" in df.columns or "callback_date" in df.columns:
+        cb_col = "Callback_Date" if "Callback_Date" in df.columns else "callback_date"
+        callback_df = df[df[cb_col].notna() & (df[cb_col].astype(str).str.strip() != "")]
+        callback_df = callback_df[callback_df["Status"].str.contains("Applied|Success", case=False, na=False)]
+
+        if len(callback_df) >= 3:
+            # Enough callbacks to learn from — use them exclusively
+            learn_df = callback_df
+            ctx.callback_rate = round(100 * len(callback_df) / max(ctx.applied_count, 1), 1)
+            logger.info(
+                "[OutcomeTracker] Using %d callback-confirmed rows for keyword learning (callback_rate=%.1f%%)",
+                len(learn_df), ctx.callback_rate
+            )
+        else:
+            # Fallback: not enough callbacks yet — use all submissions (old behaviour)
+            learn_df = applied_df
+            logger.info(
+                "[OutcomeTracker] Insufficient callbacks (%d) — learning from all %d submissions",
+                len(callback_df), ctx.applied_count
+            )
+    else:
+        learn_df = applied_df
+        logger.debug("[OutcomeTracker] No callback_date column — learning from submissions (add column to improve accuracy)")
+
+    if len(learn_df) > 0:
+        ctx.good_title_keywords = _extract_title_keywords(learn_df["Role"].tolist())
+        ctx.avg_score_applied = float(learn_df["Score"].mean())
         ctx.top_applied_roles = (
-            applied_df["Role"]
+            learn_df["Role"]
             .str.lower()
             .str.strip()
             .value_counts()
