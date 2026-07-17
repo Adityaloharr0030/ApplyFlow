@@ -33,46 +33,68 @@ class LinkedInPlatform(Platform):
     def search(self, profile: dict) -> list[dict]:
         if self.blocked:
             return []
-            
+
         keywords = "+".join(profile.get("keywords", ["internship"])[:3])
-        url = (
-            f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-            f"?keywords={keywords}&location=India&f_WT=2&start=0"
-        )
+        max_results = int(os.getenv("LINKEDIN_MAX_APPLIES", "10"))
 
-        logger.info(f"[LinkedIn] Searching guest API: keywords={keywords}")
+        listings: list[dict] = []
+        page = 0
 
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=15)
-            resp.raise_for_status()
+        while len(listings) < max_results:
+            url = (
+                f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+                f"?keywords={keywords}"
+                f"&location=India"
+                f"&f_WT=2"       # Remote / Work-from-home
+                f"&f_AL=true"    # ✅ Easy Apply ONLY — eliminates external-apply false positives
+                f"&start={page * 25}"
+            )
 
-            soup = BeautifulSoup(resp.text, "html.parser")
-            listings: list[dict] = []
+            logger.info(f"[LinkedIn] Searching guest API: keywords={keywords} page={page} (Easy Apply only)")
 
-            for card in soup.select("li"):
-                title_el = card.select_one(".base-search-card__title")
-                company_el = card.select_one(".base-search-card__subtitle")
-                location_el = card.select_one(".job-search-card__location")
-                link_el = card.select_one("a.base-card__full-link")
+            try:
+                resp = requests.get(url, headers=HEADERS, timeout=15)
+                resp.raise_for_status()
 
-                if title_el and link_el:
-                    listings.append({
-                        "title": title_el.get_text(strip=True),
-                        "company": company_el.get_text(strip=True) if company_el else "Unknown",
-                        "location": location_el.get_text(strip=True) if location_el else "Not specified",
-                        "apply_url": link_el["href"].split("?")[0],
-                        "source": "linkedin",
-                    })
+                soup = BeautifulSoup(resp.text, "html.parser")
+                cards = soup.select("li")
 
-                if len(listings) >= 15: # slightly bump up limit to find more
+                if not cards:
+                    logger.info("[LinkedIn] No more results — stopping pagination")
                     break
 
-            logger.info(f"[LinkedIn] ✓ Found {len(listings)} listing(s)")
-            return listings
+                page_count = 0
+                for card in cards:
+                    title_el   = card.select_one(".base-search-card__title")
+                    company_el = card.select_one(".base-search-card__subtitle")
+                    location_el = card.select_one(".job-search-card__location")
+                    link_el    = card.select_one("a.base-card__full-link")
 
-        except Exception as e:
-            logger.warning(f"[LinkedIn] ✗ Search failed: {e}")
-            return []
+                    if title_el and link_el:
+                        listings.append({
+                            "title":      title_el.get_text(strip=True),
+                            "company":    company_el.get_text(strip=True) if company_el else "Unknown",
+                            "location":   location_el.get_text(strip=True) if location_el else "Not specified",
+                            "apply_url":  link_el["href"].split("?")[0],
+                            "source":     "linkedin",
+                            "easy_apply": True,   # guaranteed — only f_AL=true results reach here
+                        })
+                        page_count += 1
+
+                    if len(listings) >= max_results:
+                        break
+
+                if page_count == 0:
+                    break  # Empty page — no more results
+
+                page += 1
+
+            except Exception as e:
+                logger.warning(f"[LinkedIn] ✗ Search page {page} failed: {e}")
+                break
+
+        logger.info(f"[LinkedIn] ✓ Found {len(listings)} Easy Apply listing(s)")
+        return listings
 
     def apply(self, listing: dict, cover_note: str, profile: dict, driver) -> dict:
         if self.blocked:

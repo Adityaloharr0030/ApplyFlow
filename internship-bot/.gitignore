@@ -35,11 +35,12 @@ ENV/
 Thumbs.db
 desktop.ini
 
-# Temporary Test Files
-test_out.txt
-unstop_page.html
-unstop_screenshot.png
-unstop_test.txt
+# ─── Debug & Temporary Artifacts (root-level) ───
+# Prevent HTML page dumps, screenshots, and text logs from being committed
+*.html
+*.png
+*.out
+# test_out.txt is the only named exception kept for historical reasons; use scripts/debug/ for everything else
 
-# Temporary profiles
+# ─── Temporary Chrome Profile ───
 ../bot_chrome_profile_tmp/
