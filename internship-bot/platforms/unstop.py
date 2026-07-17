@@ -11,7 +11,9 @@ import time
 import os
 import requests
 from typing import Any
+from selenium.common.exceptions import StaleElementReferenceException
 from .base import Platform
+from utils.retry import safe_find, safe_find_all, safe_click, find_button_by_text, wait_for_page_load
 
 logger = logging.getLogger(__name__)
 
@@ -170,10 +172,10 @@ class UnstopPlatform(Platform):
                     if filled > 0:
                         logger.info(f"  [Step {step+1}] Filled {filled} field(s)")
 
-                    # ── Handle textareas ───────────────────────────────────
-                    try:
-                        textareas = driver.find_elements("css selector", "textarea")
-                        for ta in textareas:
+                    # ── Handle textareas ─────────────────────────────────────
+                    textareas = safe_find_all(driver, "textarea", timeout=3.0)
+                    for ta in textareas:
+                        try:
                             if ta.is_displayed() and not (ta.get_attribute("value") or "").strip():
                                 from agent.form_filler import _get_field_label
                                 label = _get_field_label(driver, ta)
@@ -184,44 +186,50 @@ class UnstopPlatform(Platform):
                                 ta.send_keys(answer)
                                 logger.info(f"  ✓ Filled textarea: {(label or 'additional')[:30]}")
                                 random_idle(0.5, 1.0)
-                    except Exception:
-                        pass
+                        except StaleElementReferenceException:
+                            logger.debug("  [Unstop] Textarea went stale, skipping")
+                            continue
+                        except Exception as ta_err:
+                            logger.debug(f"  [Unstop] Textarea fill error: {ta_err}")
 
-                    # ── Handle resume upload ───────────────────────────────
-                    try:
-                        file_inputs = driver.find_elements("css selector", "input[type='file']")
-                        resume_path = profile.get("resume_path", "")
-                        if file_inputs and resume_path:
-                            abs_path = os.path.abspath(resume_path)
-                            if os.path.exists(abs_path):
-                                for fi in file_inputs:
-                                    try:
-                                        fi.send_keys(abs_path)
-                                        logger.info("  ✓ Uploaded resume")
-                                        random_idle(1.0, 2.0)
-                                        break
-                                    except Exception:
-                                        continue
-                    except Exception:
-                        pass
+                    # ── Handle resume upload ─────────────────────────────────
+                    file_inputs = safe_find_all(driver, "input[type='file']", timeout=2.0)
+                    resume_path = profile.get("resume_path", "")
+                    if file_inputs and resume_path:
+                        abs_path = os.path.abspath(resume_path)
+                        if os.path.exists(abs_path):
+                            for fi in file_inputs:
+                                try:
+                                    fi.send_keys(abs_path)
+                                    logger.info("  ✓ Uploaded resume")
+                                    random_idle(1.0, 2.0)
+                                    break
+                                except StaleElementReferenceException:
+                                    continue
+                                except Exception as fi_err:
+                                    logger.debug(f"  [Unstop] Resume upload error: {fi_err}")
 
                     # ── Handle OTP ─────────────────────────────────────────
                     if not handle_otp_if_present(driver, platform="Unstop", timeout=120):
                         self.record_captcha()
                         return {"success": False, "message": "OTP verification timed out"}
 
-                    # ── Check for error messages ───────────────────────────
-                    try:
-                        errors = driver.find_elements("css selector",
-                            ".error-message, .form-error, [class*='error'], .invalid-feedback"
-                        )
-                        visible_errors = [e for e in errors if e.is_displayed() and e.text.strip()]
-                        if visible_errors:
-                            logger.warning(f"  ⚠️ Form errors: {[e.text for e in visible_errors[:3]]}")
-                            fill_form_fields(driver, profile)
-                            random_idle(0.5, 1.0)
-                    except Exception:
-                        pass
+                    # ── Check for error messages ─────────────────────────────────
+                    error_els = safe_find_all(driver,
+                        ".error-message, .form-error, [class*='error'], .invalid-feedback",
+                        timeout=2.0
+                    )
+                    visible_errors = []
+                    for e in error_els:
+                        try:
+                            if e.is_displayed() and e.text.strip():
+                                visible_errors.append(e.text)
+                        except StaleElementReferenceException:
+                            pass
+                    if visible_errors:
+                        logger.warning(f"  ⚠️ Form errors: {visible_errors[:3]}")
+                        fill_form_fields(driver, profile)
+                        random_idle(0.5, 1.0)
 
                     # ── Look for Submit / Next / Confirm buttons ───────────
                     submit_btn = None

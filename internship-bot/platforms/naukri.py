@@ -22,7 +22,9 @@ import os
 import requests
 from bs4 import BeautifulSoup
 from typing import Any
+from selenium.common.exceptions import StaleElementReferenceException
 from .base import Platform
+from utils.retry import safe_find, safe_find_all, safe_click, find_button_by_text, wait_for_page_load
 
 logger = logging.getLogger(__name__)
 
