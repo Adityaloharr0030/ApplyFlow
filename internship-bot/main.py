@@ -38,11 +38,17 @@ from utils.browser import create_driver
 from agent.interview_prep import generate_interview_prep
 from platforms.login import LOGIN_HANDLERS
 from agent.resume_brain import get_resume_context
+from core.models import CandidateProfile, profile_from_dict
 
 # ─── Constants ───
 PROFILE_PATH = Path("./data/profile.json")
 LOG_DIR = Path("./logs")
+DATA_DIR = Path("./data")
 SCHEDULE_TIME = "09:00"
+
+# ─── Ensure required directories exist (safe for fresh clones) ───
+for _d in (LOG_DIR, DATA_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
 
 def setup_logging() -> logging.Logger:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -78,33 +84,36 @@ def setup_logging() -> logging.Logger:
     return logger
 
 def load_profile() -> dict:
+    """Load and validate profile.json via Pydantic. Returns a plain dict for
+    backward compatibility, but validation ensures no silent KeyErrors."""
     if not PROFILE_PATH.exists():
         print(f"❌ Profile not found: {PROFILE_PATH}")
         sys.exit(1)
 
     with open(PROFILE_PATH, "r", encoding="utf-8") as f:
-        profile = json.load(f)
+        raw = json.load(f)
 
-    # Validate resume_path exists
+    # Validate through Pydantic — raises ValidationError with clear messages
+    try:
+        validated = profile_from_dict(raw)
+    except Exception as e:
+        logging.getLogger("main").warning(f"⚠️  profile.json validation warning: {e}")
+        validated = None
+
+    profile = validated.model_dump(mode="python") if validated else raw
+
+    # Runtime warnings
+    _log = logging.getLogger("main")
     resume_path = profile.get("resume_path", "")
     if resume_path:
-        rp = Path(resume_path)
-        if not rp.exists():
-            logging.getLogger("main").warning(
-                f"⚠️  resume_path '{resume_path}' does not exist! "
-                "Applications that require a resume upload will fail."
-            )
+        if not Path(resume_path).exists():
+            _log.warning(f"⚠️  resume_path '{resume_path}' does not exist! Resume uploads will fail.")
     else:
-        logging.getLogger("main").warning(
-            "⚠️  No resume_path set in profile.json — resume uploads will fail."
-        )
+        _log.warning("⚠️  No resume_path set in profile.json — resume uploads will fail.")
 
-    # Validate email isn't a placeholder
     email = profile.get("email", "")
-    if email == "youremail@example.com" or not email:
-        logging.getLogger("main").warning(
-            "⚠️  Email in profile.json is a placeholder or empty! Cold emails/logins may fail."
-        )
+    if email in ("youremail@example.com", ""):
+        _log.warning("⚠️  Email in profile.json is placeholder or empty! Logins may fail.")
 
     return profile
 
