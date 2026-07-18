@@ -239,7 +239,9 @@ def create_driver():
         options = uc.ChromeOptions()
 
         # ── Persistent bot profile (sessions, cookies, localStorage) ──
-        user_data_dir = r"C:\ApplyFlow\bot_chrome_profile"
+        # Derive path relative to project root so it works on any drive/install.
+        _project_root = Path(__file__).resolve().parents[1]
+        user_data_dir = str(_project_root / "bot_chrome_profile")
         options.add_argument(f"--user-data-dir={user_data_dir}")
         options.add_argument("--profile-directory=Default")
 

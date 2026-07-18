@@ -103,16 +103,18 @@ OUTPUT: Plain text letter only. Nothing else."""
 
     # ── Rich Local Fallback using parsed resume data ──
     logger.info("  [CoverNote] Using local offline template")
-    
+
     if resume_ctx:
+        # Resume context IS available — derive everything from it
         proj = resume_ctx.best_project_for(title)
-        proj_name = proj.get("name", "my recent projects")
+        proj_name = proj.get("name", resume_ctx.project_names()[0] if resume_ctx.project_names() else "my recent project")
         techs = ", ".join(proj.get("techs", [])[:3])
         skills_top3 = resume_ctx.top_skills(3)
         degree_line = f"{resume_ctx.degree} at {resume_ctx.college} (graduating {resume_ctx.graduation_year})"
         achiev = resume_ctx.achievements[0] if resume_ctx.achievements else ""
     else:
-        proj_name = projects[0] if projects else "my recent projects"
+        # Resume context NOT available — use profile.json locals (guaranteed defined in this branch)
+        proj_name = projects[0] if projects else "my recent project"
         techs = skills_list[0] if skills_list else "software engineering"
         skills_top3 = ", ".join(skills_list[:3])
         degree_line = f"{degree} at {college} (graduating {year})"
@@ -131,3 +133,4 @@ I am available to start immediately and excited to contribute my skills to your 
 Regards,
 {name}
 {email}"""
+

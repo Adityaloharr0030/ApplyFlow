@@ -1,12 +1,30 @@
 {
   "name": "Aditya Lohar",
-  "degree": "B.Tech Computer Engineering",
-  "year": "2027",
-  "college": "KBSCOE, Jalgaon (DBATU)",
   "email": "adityalohar00030@gmail.com",
-  "github": "https://github.com/Adityaloharaa0030",
-  "linkedin": "https://linkedin.com/in/aditya-lohar",
+  "phone": "",
   "location": "Jalgaon, Maharashtra",
+  "degree": "B.Tech Computer Engineering",
+  "college": "KBSCOE, Jalgaon (DBATU)",
+  "year": "2027",
+  "cgpa": "",
+  "gender": "",
+  "dob": "",
+  "resume_path": "./data/resume.pdf",
+  "linkedin": "https://linkedin.com/in/aditya-lohar",
+  "github": "https://github.com/Adityaloharaa0030",
+  "keywords": [
+    "full stack",
+    "frontend",
+    "backend",
+    "mobile developer",
+    "flutter",
+    "react",
+    "next.js",
+    "java",
+    "software engineering",
+    "app development",
+    "web development"
+  ],
   "skills": [
     "Flutter",
     "Dart",
@@ -31,28 +49,13 @@
     "JWT",
     "OOP"
   ],
-  "keywords": [
-    "full stack",
-    "frontend",
-    "backend",
-    "mobile developer",
-    "flutter",
-    "react",
-    "next.js",
-    "java",
-    "software engineering",
-    "app development",
-    "web development"
+  "projects": [
+    "Krushi Mitra — AI-Powered Farmer Assistance App (Flutter, Firebase, Riverpod, Gemini API, Claude API, SQLite, OpenWeatherMap)",
+    "CrazyXAni — Anime Streaming Platform (Next.js, React, Node.js, MongoDB, Anilist API)",
+    "Inventory Management REST API (Node.js, Express, MySQL, JWT, Postman)",
+    "Java OOP Console Application (Java, OOP, Collections, Exception Handling)"
   ],
-  "exclude_keywords": [
-    "sales",
-    "marketing",
-    "business development",
-    "hr",
-    "content writing",
-    "telecalling",
-    "seo"
-  ],
+  "achievement": "Top ~800 of 31,000+ participants at Meta PyTorch OpenEnv Hackathon",
   "location_preferences": [
     "remote",
     "work from home",
@@ -65,10 +68,30 @@
     "jalgaon",
     "maharashtra"
   ],
+  "exclude_keywords": [
+    "sales",
+    "marketing",
+    "business development",
+    "hr",
+    "content writing",
+    "telecalling",
+    "seo"
+  ],
+  "years_of_experience": "0",
+  "notice_period": "Immediate",
+  "current_ctc": "0",
+  "expected_ctc": "As per industry standards",
+  "willing_to_relocate": "Yes",
   "preferred_mode": [
     "remote",
     "hybrid"
   ],
+  "open_to_hybrid": "Yes",
+  "work_authorization": "Indian Citizen",
+  "internshala_email": "",
+  "linkedin_email": "",
+  "naukri_email": "",
+  "unstop_email": "",
   "preferred_cities": [
     "Bengaluru",
     "Pune",
@@ -77,13 +100,6 @@
     "Remote"
   ],
   "avoid_companies": [],
-  "projects": [
-    "Krushi Mitra — AI-Powered Farmer Assistance App (Flutter, Firebase, Riverpod, Gemini API, Claude API, SQLite, OpenWeatherMap)",
-    "CrazyXAni — Anime Streaming Platform (Next.js, React, Node.js, MongoDB, Anilist API)",
-    "Inventory Management REST API (Node.js, Express, MySQL, JWT, Postman)",
-    "Java OOP Console Application (Java, OOP, Collections, Exception Handling)"
-  ],
-  "achievement": "Top ~800 of 31,000+ participants at Meta PyTorch OpenEnv Hackathon",
   "min_stipend": 0,
   "job_types": [
     "internship",
@@ -97,16 +113,5 @@
     "google.com",
     "amazon.jobs",
     "microsoft.com"
-  ],
-  "resume_path": "./data/resume.pdf",
-  "notice_period": "Immediate",
-  "current_ctc": "0",
-  "expected_ctc": "As per industry standards",
-  "willing_to_relocate": "Yes",
-  "open_to_hybrid": "Yes",
-  "years_of_experience": "0",
-  "work_authorization": "Indian Citizen",
-  "phone": "",
-  "gender": "",
-  "dob": ""
+  ]
 }

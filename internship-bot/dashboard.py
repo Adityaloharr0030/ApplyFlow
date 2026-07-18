@@ -3,10 +3,13 @@ import sys
 import time
 import subprocess
 import asyncio
+import json
+from datetime import datetime, date
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -28,6 +31,20 @@ CSV_PATH = LOGS_DIR / "applications.csv"
 
 # Track the currently running bot process
 _bot_process: subprocess.Popen | None = None
+_bot_started_at: Optional[str] = None
+
+# ── Live session state (written by the bot via /api/session/update) ────────────
+_live_session: dict = {
+    "status": "idle",
+    "current_platform": "",
+    "current_listing": "",
+    "current_step": "",
+    "applied_count": 0,
+    "skipped_count": 0,
+    "error_count": 0,
+    "events": [],
+}
+_ws_clients: list[WebSocket] = []
 
 
 # ──────────────────────────────────────────────────────────────
@@ -120,13 +137,32 @@ def get_applications():
 
 @app.get("/api/stats")
 def get_stats():
-    """Lightweight summary: total applied and per-platform breakdown."""
+    """Lightweight summary: total applied, today's count, success rate, and per-platform breakdown."""
     df = load_data()
 
     if df.empty:
-        return {"total_applied": 0, "platforms": {}, "recent": []}
+        return {
+            "total_applied": 0,
+            "today_applied": 0,
+            "success_rate": 0,
+            "platforms": {},
+            "recent": [],
+        }
 
-    applied_df = df[df["Status"].str.contains("Applied|Success", case=False, na=False)]
+    applied_mask = df["Status"].str.contains("Applied|Success", case=False, na=False)
+    applied_df = df[applied_mask]
+
+    # Today's applications
+    today_str = date.today().strftime("%Y-%m-%d")
+    today_applied = 0
+    if "Date" in df.columns:
+        today_applied = int(
+            applied_df[applied_df["Date"].astype(str).str.startswith(today_str)].shape[0]
+        )
+
+    # Success rate = applied / total (excluding dry-runs)
+    total = len(df)
+    success_rate = round((len(applied_df) / total) * 100) if total > 0 else 0
 
     platforms = {}
     if "Source" in applied_df.columns:
@@ -142,6 +178,8 @@ def get_stats():
 
     return {
         "total_applied": len(applied_df),
+        "today_applied": today_applied,
+        "success_rate": success_rate,
         "platforms": platforms,
         "recent": recent,
     }
@@ -153,16 +191,16 @@ def get_stats():
 # ──────────────────────────────────────────────────────────────
 
 @app.get("/api/logs")
-def get_logs():
-    """Return the last 100 lines of the most recent run log."""
+def get_logs(lines: int = Query(default=100, ge=1, le=2000)):
+    """Return the last N lines of the most recent run log (default 100, max 2000)."""
     latest = get_latest_log_file()
     if not latest:
         return {"logs": ["No logs found. Run the bot first."]}
 
     try:
         with open(latest, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()[-100:]
-        return {"logs": [l.rstrip("\n") for l in lines]}
+            raw_lines = f.readlines()[-lines:]
+        return {"logs": [line.rstrip("\n") for line in raw_lines]}
     except Exception as e:
         return {"logs": [f"Error reading logs: {e}"]}
 
@@ -221,9 +259,16 @@ async def stream_logs():
 @app.get("/api/status")
 def get_status():
     """Check if the bot process is currently running."""
-    global _bot_process
+    global _bot_process, _bot_started_at
     is_running = _bot_process is not None and _bot_process.poll() is None
-    return {"running": is_running}
+    if not is_running:
+        _bot_started_at = None  # clear start time when bot exits
+    return {
+        "is_running": is_running,
+        "started_at": _bot_started_at,
+        "schedule_enabled": False,
+        "next_run": None,
+    }
 
 
 # ──────────────────────────────────────────────────────────────
@@ -264,13 +309,147 @@ def run_bot(req: RunBotRequest = RunBotRequest()):
 @app.post("/api/start")
 def start_bot():
     """Alias for /api/run-bot — for dashboard/frontend compatibility. Always shows browser."""
-    global _bot_process
+    global _bot_process, _bot_started_at
 
     if _bot_process is not None and _bot_process.poll() is None:
-        return {"message": "Bot is already running."}
+        # Bug 2 fix: include `already_running` field so the frontend alert fires
+        return {"already_running": True, "message": "Bot is already running."}
 
     _bot_process = _spawn_bot(["python", "main.py", "--run-now"], headless=False)
-    return {"message": "Bot started in the background.", "pid": _bot_process.pid}
+    _bot_started_at = datetime.utcnow().isoformat() + "Z"
+    return {"already_running": False, "message": "Bot started in the background.", "pid": _bot_process.pid}
+
+
+# ──────────────────────────────────────────────────────────────
+# /api/stop — stop the running bot process
+# ──────────────────────────────────────────────────────────────
+
+@app.post("/api/stop")
+def stop_bot():
+    """Terminate the running bot process."""
+    global _bot_process, _bot_started_at
+    if _bot_process is not None and _bot_process.poll() is None:
+        _bot_process.terminate()
+        _bot_started_at = None
+        return {"message": "Bot stopped."}
+    return {"message": "Bot was not running."}
+
+
+# ──────────────────────────────────────────────────────────────
+# /api/session/live — live session state (Bug 5 fix)
+# /api/session/update — called by the bot to push updates
+# ──────────────────────────────────────────────────────────────
+
+@app.get("/api/session/live")
+def get_live_session():
+    """Return current live session state (polled by frontend every 2 s)."""
+    global _bot_process
+    is_running = _bot_process is not None and _bot_process.poll() is None
+    session = dict(_live_session)
+    if not is_running and session["status"] == "running":
+        session["status"] = "idle"
+    return session
+
+
+class SessionUpdate(BaseModel):
+    status: str = "running"
+    current_platform: str = ""
+    current_listing: str = ""
+    current_step: str = ""
+    applied_count: int = 0
+    skipped_count: int = 0
+    error_count: int = 0
+    event: Optional[dict] = None  # single event to append
+
+
+@app.post("/api/session/update")
+async def update_live_session(update: SessionUpdate):
+    """Bot calls this to push live session progress to the dashboard."""
+    global _live_session
+    _live_session["status"] = update.status
+    _live_session["current_platform"] = update.current_platform
+    _live_session["current_listing"] = update.current_listing
+    _live_session["current_step"] = update.current_step
+    _live_session["applied_count"] = update.applied_count
+    _live_session["skipped_count"] = update.skipped_count
+    _live_session["error_count"] = update.error_count
+
+    if update.event:
+        event = dict(update.event)
+        if "timestamp" not in event:
+            event["timestamp"] = datetime.utcnow().isoformat() + "Z"
+        _live_session["events"] = (_live_session["events"] + [event])[-100:]
+
+    # Broadcast to all connected WebSocket clients
+    if _ws_clients:
+        payload = json.dumps({"type": "session_state", "data": _live_session})
+        dead = []
+        for ws in _ws_clients:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            _ws_clients.remove(ws)
+
+    return {"ok": True}
+
+
+# ──────────────────────────────────────────────────────────────
+# /ws/live — WebSocket for real-time events (Bug 5 fix)
+# ──────────────────────────────────────────────────────────────
+
+@app.websocket("/ws/live")
+async def websocket_live(websocket: WebSocket):
+    """WebSocket endpoint — sends session_state on connect, then on every update."""
+    await websocket.accept()
+    _ws_clients.append(websocket)
+    try:
+        # Send current state immediately on connect
+        await websocket.send_text(
+            json.dumps({"type": "session_state", "data": _live_session})
+        )
+        # Keep connection alive; data is pushed via update_live_session
+        while True:
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=30)
+            except asyncio.TimeoutError:
+                # Send a heartbeat ping
+                await websocket.send_text(json.dumps({"type": "ping"}))
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        if websocket in _ws_clients:
+            _ws_clients.remove(websocket)
+
+
+# ──────────────────────────────────────────────────────────────
+# /api/schedule — read/write schedule config
+# ──────────────────────────────────────────────────────────────
+
+SCHEDULE_FILE = BASE_DIR / "data" / "schedule.json"
+_DEFAULT_SCHEDULE = {"enabled": False, "days": ["mon", "tue", "wed", "thu", "fri"], "time": "09:00", "dry_run": True}
+
+
+@app.get("/api/schedule")
+def get_schedule():
+    """Return current schedule config."""
+    if SCHEDULE_FILE.exists():
+        try:
+            return json.loads(SCHEDULE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return _DEFAULT_SCHEDULE
+
+
+@app.post("/api/schedule")
+def save_schedule(config: dict):
+    """Persist schedule config and return it."""
+    SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SCHEDULE_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    return {"schedule": config}
 
 
 # ──────────────────────────────────────────────────────────────

@@ -41,6 +41,21 @@ def generate_report() -> str:
 
     df = pd.read_csv(CSV_PATH)
 
+    # Normalise column names to lowercase so lookups work regardless of CSV casing.
+    # Also map the CSV's "Source" column → "platform" to match the rest of the report.
+    df.columns = [c.strip() for c in df.columns]
+    col_rename = {}
+    for c in df.columns:
+        col_rename[c] = c.lower()
+    df = df.rename(columns=col_rename)
+
+    # CSV uses "source" (scraped from "Source" header) — expose it as "platform"
+    if "source" in df.columns and "platform" not in df.columns:
+        df["platform"] = df["source"]
+
+    # "apply url" → "apply_url", "cover note preview" → "cover_note_preview"
+    df.columns = [c.replace(" ", "_") for c in df.columns]
+
     lines = ["", "=" * 60, "  ApplyFlow — Score Distribution Report", "=" * 60]
 
     # ── Platform counts ────────────────────────────────────────────
@@ -49,18 +64,18 @@ def generate_report() -> str:
         counts = df["platform"].value_counts()
         for plat, cnt in counts.items():
             lines.append(f"    {plat:<20} {cnt:>4} applications")
-    
+
     # ── Score distributions ────────────────────────────────────────
     if "score" in df.columns and "platform" in df.columns:
         lines.append("\n[2] Mean AI Score per Platform (potential scoring drift):")
         score_df = df.dropna(subset=["score"])
-        score_df = score_df[pd.to_numeric(score_df["score"], errors="coerce").notna()]
+        score_df = score_df[pd.to_numeric(score_df["score"], errors="coerce").notna()].copy()
         score_df["score"] = pd.to_numeric(score_df["score"])
         by_platform = score_df.groupby("platform")["score"].agg(["mean", "std", "count"])
         for plat, row in by_platform.iterrows():
             flag = " ⚠️ DRIFT" if abs(row["mean"] - by_platform["mean"].mean()) > 1.5 else ""
             lines.append(
-                f"    {plat:<20} mean={row['mean']:.1f}  std={row['std']:.1f}"
+                f"    {plat:<20} mean={row['mean']:.1f}  std={row['std']:.2f}"
                 f"  n={int(row['count'])}{flag}"
             )
 
@@ -74,7 +89,8 @@ def generate_report() -> str:
     # ── Callback analysis ──────────────────────────────────────────
     if "callback_date" in df.columns:
         cb = df.dropna(subset=["callback_date"])
-        total_applied = len(df[df["status"].str.contains("Applied", na=False)])
+        cb = cb[cb["callback_date"].astype(str).str.strip() != ""]
+        total_applied = int(df["status"].str.contains("Applied|Success", case=False, na=False).sum()) if "status" in df.columns else 0
         cb_rate = 100 * len(cb) / total_applied if total_applied else 0
         lines.append(f"\n[4] Callback Rate: {len(cb)} / {total_applied} ({cb_rate:.1f}%)")
         if len(cb) > 0 and "platform" in df.columns:
@@ -84,7 +100,7 @@ def generate_report() -> str:
                 lines.append(f"    {plat:<20} {len(grp)} callbacks / {total_plat} applied")
     else:
         lines.append(
-            "\n[4] Callback Rate: N/A — Add a 'callback_date' column to "
+            "\n[4] Callback Rate: N/A — Add a 'Callback_Date' column to "
             "applications.csv when you receive interview invites to enable this."
         )
 

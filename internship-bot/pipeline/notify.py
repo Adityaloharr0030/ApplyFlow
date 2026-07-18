@@ -80,6 +80,9 @@ def fire_instant(platform: str, listing: dict, is_error: bool = False, error_msg
 
     for label, fn in [("Telegram", telegram_instant), ("ntfy", ntfy_instant), ("WhatsApp", whatsapp_instant)]:
         try:
-            fn(msg, tags=tags) if label != "Telegram" else fn(msg)
+            if label == "ntfy":
+                fn(msg, tags=tags)  # only ntfy's send_instant accepts `tags`
+            else:
+                fn(msg)             # Telegram and WhatsApp take message only
         except Exception as exc:
             logger.debug("[Notify] %s instant failed: %s", label, exc)

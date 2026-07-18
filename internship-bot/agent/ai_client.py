@@ -130,16 +130,18 @@ def get_ai_response(system_prompt: str, user_prompt: str, max_tokens: int = 1024
             logger.warning(f"  [AI] {provider.capitalize()} hit limit: {e}. Removing key from rotation.")
             _exhausted_keys.add(api_key)
             last_error = e
-            
-            # Rebuild working keys immediately
+
+            # Rebuild working keys immediately and reset the attempt budget
             working_keys = _get_working_keys(model_type)
             if not working_keys:
                 logger.error("  [AI] ✗ All AI models/keys exhausted limits.")
                 raise Exception("All AI quotas exhausted.") from e
-                
+
             import itertools
             _last_keys_list = working_keys
             _key_cycle = itertools.cycle(working_keys)
+            # Bug 6 fix: cap remaining attempts to the new (smaller) pool size
+            attempts = min(attempts - 1, len(working_keys))
             logger.info(f"  [AI] → Failing over... {len(working_keys)} keys remaining in rotation.")
             continue
                 
