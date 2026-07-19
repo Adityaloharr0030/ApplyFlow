@@ -129,34 +129,48 @@ class UnstopPlatform(Platform):
 
             # ── Find and click Apply button ────────────────────────────────
             apply_clicked = False
-            apply_selectors = [
-                "button.btn-apply",
-                "a.btn-apply",
-                "button[title='Apply']",
-                "button.apply-btn",
-                ".apply_btn button",
-                "button.btn-primary.apply",
-                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'apply now')]",
-                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'apply')]",
-                "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'apply')]",
-                "//div[contains(@class, 'apply')]//button",
-            ]
-
-            for selector in apply_selectors:
+            
+            # 1. Try find_button_by_text first (most robust for UI changes)
+            btn = find_button_by_text(driver, "apply", "apply now", "register")
+            if btn:
                 try:
-                    if selector.startswith("//"):
-                        btn = driver.find_element("xpath", selector)
-                    else:
-                        btn = driver.find_element("css selector", selector)
+                    real_click(driver, btn)
+                    apply_clicked = True
+                    logger.info("  ✓ Clicked Apply button (text match)")
+                    random_idle(2.0, 3.0)
+                except Exception as e:
+                    logger.debug(f"  [Unstop] text-match click failed: {e}")
 
-                    if btn.is_displayed():
-                        real_click(driver, btn)
-                        apply_clicked = True
-                        logger.info("  ✓ Clicked Apply button (real mouse)")
-                        random_idle(2.0, 3.0)
-                        break
-                except Exception:
-                    continue
+            # 2. Fallback to hardcoded selectors
+            if not apply_clicked:
+                apply_selectors = [
+                    "button.btn-apply",
+                    "a.btn-apply",
+                    "button[title='Apply']",
+                    "button.apply-btn",
+                    ".apply_btn button",
+                    "button.btn-primary.apply",
+                    "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'apply now')]",
+                    "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'apply')]",
+                    "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'apply')]",
+                    "//div[contains(@class, 'apply')]//button",
+                ]
+
+                for selector in apply_selectors:
+                    try:
+                        if selector.startswith("//"):
+                            btn = driver.find_element("xpath", selector)
+                        else:
+                            btn = driver.find_element("css selector", selector)
+
+                        if btn.is_displayed():
+                            real_click(driver, btn)
+                            apply_clicked = True
+                            logger.info("  ✓ Clicked Apply button (real mouse)")
+                            random_idle(2.0, 3.0)
+                            break
+                    except Exception:
+                        continue
 
             if not apply_clicked:
                 return {"success": False, "message": "No Apply button found (Manual apply required)"}

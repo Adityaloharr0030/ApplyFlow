@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "ApplyFlow Session Capture",
+  "version": "1.0.0",
+  "description": "Capture browser sessions to bypass job portal logins.",
+  "permissions": [
+    "cookies",
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.linkedin.com/*",
+    "*://*.naukri.com/*",
+    "*://*.internshala.com/*",
+    "*://*.unstop.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

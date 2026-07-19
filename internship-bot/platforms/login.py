@@ -15,6 +15,49 @@ import random
 
 logger = logging.getLogger(__name__)
 
+try:
+    from utils.session_injector import load_session_into_driver
+except ImportError:
+    def load_session_into_driver(driver, platform):
+        return False
+
+
+def _save_debug_snapshot(driver, reason: str):
+    try:
+        from pathlib import Path
+        from datetime import datetime
+        
+        debug_dir = Path("debug")
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%md_%H%M%S")
+        prefix = f"{reason.replace(' ', '_')}_{timestamp}"
+        
+        screenshot_path = debug_dir / f"{prefix}.png"
+        html_path = debug_dir / f"{prefix}.html"
+        
+        driver.save_screenshot(str(screenshot_path))
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(driver.page_source)
+            
+        visible_text = driver.find_element("tag name", "body").text
+        snippet = visible_text[:200].replace("\n", " | ")
+        
+        logger.error(f"[Login Debug] Saved snapshot to debug/ ({reason})")
+        logger.error(f"[Login Debug] URL: {driver.current_url}")
+        logger.error(f"[Login Debug] Text snippet: {snippet}...")
+    except Exception as e:
+        logger.debug(f"[Login Debug] Failed to save snapshot: {e}")
+
+def _wait_for_page_load(driver, timeout=10):
+    try:
+        from selenium.webdriver.support.ui import WebDriverWait
+        WebDriverWait(driver, timeout).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+    except Exception:
+        pass
+
 
 def _wait_and_find(driver, css_selector, timeout=10, require_visible=True):
     """Wait for an element to appear and return it, or None."""
@@ -69,7 +112,8 @@ def _is_logged_in_internshala(driver) -> bool:
     """Check if we're already logged into Internshala."""
     try:
         driver.get("https://internshala.com/")
-        time.sleep(random.uniform(2.0, 3.0))
+        _wait_for_page_load(driver)
+        time.sleep(random.uniform(0.5, 1.0))
 
         page_source = driver.page_source.lower()
 
@@ -113,6 +157,14 @@ def login_internshala(driver) -> bool:
         logger.warning("[Login] ✗ Internshala credentials not set in .env — cannot login")
         return False
 
+    # Check if we have a captured session to inject first
+    if load_session_into_driver(driver, "internshala"):
+        if _is_logged_in_internshala(driver):
+            logger.info("[Login] Using captured session for internshala")
+            return True
+        else:
+            logger.warning("[Login] Captured session for internshala failed, falling back to credentials.")
+            
     # Check if already logged in
     if _is_logged_in_internshala(driver):
         return True
@@ -204,9 +256,11 @@ def login_internshala(driver) -> bool:
                         break
                 else:
                     logger.error("[Login] ✗ CAPTCHA timeout — login failed")
+                    _save_debug_snapshot(driver, "internshala_captcha_timeout")
                     return False
             else:
                 logger.error("[Login] ✗ CAPTCHA detected in headless mode — login failed")
+                _save_debug_snapshot(driver, "internshala_captcha_headless")
                 return False
 
         # Check for error messages
@@ -238,6 +292,7 @@ def login_internshala(driver) -> bool:
         # Check if still on login page (login may have failed silently)
         if "login" in current_url:
             logger.error("[Login] ✗ Still on login page — credentials may be wrong")
+            _save_debug_snapshot(driver, "internshala_login_failed")
             return False
 
         # If we're redirected somewhere else, assume success
@@ -255,9 +310,21 @@ def login_linkedin(driver) -> bool:
     Returns True if already logged in (manual session) or if auto-login succeeds.
     """
     try:
+        # Check if we have a captured session to inject first
+        if load_session_into_driver(driver, "linkedin"):
+            driver.get("https://www.linkedin.com/feed/")
+            _wait_for_page_load(driver)
+            time.sleep(random.uniform(0.5, 1.5))
+            if "feed" in driver.current_url.lower() and "login" not in driver.current_url.lower():
+                logger.info("[Login] Using captured session for linkedin")
+                return True
+            else:
+                logger.warning("[Login] Captured session for linkedin failed, falling back to credentials.")
+
         # Check if already logged in FIRST
         driver.get("https://www.linkedin.com/feed/")
-        time.sleep(random.uniform(2.0, 4.0))
+        _wait_for_page_load(driver)
+        time.sleep(random.uniform(0.5, 1.5))
 
         if "feed" in driver.current_url.lower() and "login" not in driver.current_url.lower():
             logger.info("[Login] ✓ Already logged into LinkedIn (session active)")
@@ -357,9 +424,11 @@ def login_linkedin(driver) -> bool:
                         break
                 else:
                     logger.error("[Login] ✗ LinkedIn challenge timeout")
+                    _save_debug_snapshot(driver, "linkedin_challenge_timeout")
                     return False
             else:
                 logger.error("[Login] ✗ LinkedIn security challenge in headless mode")
+                _save_debug_snapshot(driver, "linkedin_challenge_headless")
                 return False
 
         # Verify login
@@ -369,6 +438,7 @@ def login_linkedin(driver) -> bool:
 
         if "login" in driver.current_url.lower():
             logger.error("[Login] ✗ Still on login page — credentials may be wrong")
+            _save_debug_snapshot(driver, "linkedin_login_failed")
             return False
 
         logger.info("[Login] ✓ LinkedIn login likely succeeded")
@@ -384,9 +454,21 @@ def login_unstop(driver) -> bool:
     Log into Unstop.
     """
     try:
+        # Check if we have a captured session to inject first
+        if load_session_into_driver(driver, "unstop"):
+            driver.get("https://unstop.com/")
+            _wait_for_page_load(driver)
+            time.sleep(random.uniform(0.5, 1.0))
+            if "login" not in driver.current_url.lower():
+                logger.info("[Login] Using captured session for unstop")
+                return True
+            else:
+                logger.warning("[Login] Captured session for unstop failed, falling back to credentials.")
+
         # Check if already logged in FIRST
         driver.get("https://unstop.com/")
-        time.sleep(random.uniform(2.0, 3.0))
+        _wait_for_page_load(driver)
+        time.sleep(random.uniform(0.5, 1.0))
 
         if "login" not in driver.current_url.lower():
             logger.info("[Login] ✓ Already logged into Unstop (session active)")
@@ -461,6 +543,7 @@ def login_unstop(driver) -> bool:
             return True
 
         logger.error("[Login] ✗ Unstop login may have failed")
+        _save_debug_snapshot(driver, "unstop_login_failed")
         return False
 
     except Exception as e:
@@ -474,9 +557,22 @@ def login_naukri(driver) -> bool:
     Returns True if already logged in (manual session) or if auto-login succeeds.
     """
     try:
+        # Check if we have a captured session to inject first
+        if load_session_into_driver(driver, "naukri"):
+            driver.get("https://www.naukri.com/mnjuser/profile")
+            _wait_for_page_load(driver)
+            time.sleep(random.uniform(0.5, 1.5))
+            current_url = driver.current_url.lower()
+            if "profile" in current_url and "login" not in current_url and "nlogin" not in current_url:
+                logger.info("[Login] Using captured session for naukri")
+                return True
+            else:
+                logger.warning("[Login] Captured session for naukri failed, falling back to credentials.")
+
         # Check if already logged in FIRST
         driver.get("https://www.naukri.com/mnjuser/profile")
-        time.sleep(random.uniform(2.0, 4.0))
+        _wait_for_page_load(driver)
+        time.sleep(random.uniform(0.5, 1.5))
 
         current_url = driver.current_url.lower()
         # If we're on the profile page (not redirected to login), we're logged in
@@ -570,9 +666,11 @@ def login_naukri(driver) -> bool:
                         break
                 else:
                     logger.error("[Login] ✗ CAPTCHA timeout — login failed")
+                    _save_debug_snapshot(driver, "naukri_captcha_timeout")
                     return False
             else:
                 logger.error("[Login] ✗ CAPTCHA detected in headless mode — login failed")
+                _save_debug_snapshot(driver, "naukri_captcha_headless")
                 return False
 
         # Check for OTP verification
@@ -611,7 +709,8 @@ def login_naukri(driver) -> bool:
             return True
 
         if "login" in current_url or "nlogin" in current_url:
-            logger.error("[Login] ✗ Still on login page — credentials may be wrong")
+            logger.error("[Login] ✗ Still on Naukri login page — credentials may be wrong")
+            _save_debug_snapshot(driver, "naukri_login_failed")
             return False
 
         logger.info("[Login] ✓ Naukri login likely succeeded (redirected away from login page)")

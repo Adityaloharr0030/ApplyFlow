@@ -1,0 +1,1 @@
+// Required for manifest V3 Service Worker

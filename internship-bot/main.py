@@ -134,6 +134,9 @@ def validate_env(logger) -> None:
         if not val or val == placeholder:
             logger.warning(f"⚠️  {key} not configured — {msg}")
 
+def check_browser_profile(logger) -> None:
+    pass
+
 def fire_instant_notification(platform_name: str, listing: dict, is_error: bool = False, error_msg: str = ""):
     if is_error:
         msg = f"⚠️ {platform_name.capitalize()} error: {error_msg}"
@@ -420,6 +423,8 @@ def main():
         os.environ["DRY_RUN"] = "true"
 
     logger = setup_logging()
+    validate_env(logger)
+    check_browser_profile(logger)
 
     if args.run_now:
         logger.info("🚀 Running in one-shot mode (--run-now)")

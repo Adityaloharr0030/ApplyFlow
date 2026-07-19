@@ -13,6 +13,8 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import base64
 
 app = FastAPI(title="ApplyFlow Dashboard API")
 
@@ -46,6 +48,21 @@ _live_session: dict = {
 }
 _ws_clients: list[WebSocket] = []
 
+SESSION_DIR = BASE_DIR / "data" / "sessions"
+SESSION_DIR.mkdir(parents=True, exist_ok=True)
+STATIC_KEY = b"applyflow_mvp_secret_key_1234567"
+STATIC_SALT = b"applyflow_salt"
+
+def get_aesgcm_key():
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=STATIC_SALT,
+        iterations=100000,
+    )
+    return kdf.derive(STATIC_KEY)
 
 # ──────────────────────────────────────────────────────────────
 # Helpers
@@ -424,6 +441,76 @@ async def websocket_live(websocket: WebSocket):
         if websocket in _ws_clients:
             _ws_clients.remove(websocket)
 
+
+# ──────────────────────────────────────────────────────────────
+# /api/session/* — Captured session endpoints
+# ──────────────────────────────────────────────────────────────
+
+class SessionUploadRequest(BaseModel):
+    platform: str
+    encrypted_blob: list[int]
+    iv: list[int]
+
+@app.post("/api/session/upload")
+def upload_session(req: SessionUploadRequest):
+    try:
+        key = get_aesgcm_key()
+        aesgcm = AESGCM(key)
+        
+        ciphertext = bytes(req.encrypted_blob)
+        iv = bytes(req.iv)
+        
+        plaintext = aesgcm.decrypt(iv, ciphertext, None)
+        session_data = json.loads(plaintext.decode('utf-8'))
+        
+        if "cookies" not in session_data or "capturedAt" not in session_data:
+            raise ValueError("Invalid session shape")
+            
+        file_path = SESSION_DIR / f"{req.platform}_session.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(session_data, f, indent=2)
+            
+        return {"status": "success", "message": f"Session captured for {req.platform}"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to decrypt/save session: {e}")
+
+@app.get("/api/session/status")
+def get_session_status():
+    platforms = ["linkedin", "naukri", "internshala", "unstop"]
+    status = {}
+    
+    for plat in platforms:
+        file_path = SESSION_DIR / f"{plat}_session.json"
+        if file_path.exists():
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    
+                captured_dt = datetime.fromisoformat(data["capturedAt"].replace("Z", "+00:00"))
+                age = (datetime.now().astimezone() - captured_dt).days
+                
+                status[plat] = {
+                    "connected": True,
+                    "capturedAt": data["capturedAt"],
+                    "stale": age > 7
+                }
+            except Exception:
+                status[plat] = {"connected": False}
+        else:
+            status[plat] = {"connected": False}
+            
+    return status
+
+@app.delete("/api/session/{platform}")
+def delete_session(platform: str):
+    file_path = SESSION_DIR / f"{platform}_session.json"
+    if file_path.exists():
+        try:
+            file_path.unlink()
+            return {"status": "success"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "not_found"}
 
 # ──────────────────────────────────────────────────────────────
 # /api/schedule — read/write schedule config

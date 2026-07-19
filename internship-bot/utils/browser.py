@@ -40,20 +40,46 @@ _USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.69 Safari/537.36",
 ]
 
-# ── Canvas/Audio noise values — randomized once per session ───────────────────
-_CANVAS_NOISE = random.uniform(-0.5, 0.5)
-_AUDIO_NOISE  = random.uniform(-0.0001, 0.0001)
-_HW_CONCUR    = random.choice([4, 6, 8, 12, 16])
-_WEBGL_VENDOR  = random.choice([
-    "Google Inc. (NVIDIA)", "Google Inc. (Intel)", "Google Inc. (AMD)",
-])
-_WEBGL_RENDERER = random.choice([
-    "ANGLE (NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0)",
-    "ANGLE (Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0)",
-    "ANGLE (AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0)",
-])
+import json
 
-
+def _load_or_generate_fingerprint(profile_dir: Path) -> dict:
+    fp_path = profile_dir / "fingerprint.json"
+    if fp_path.exists():
+        try:
+            with open(fp_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"[Browser] Failed to load fingerprint: {e}")
+            
+    # Generate new fingerprint
+    from utils.human_sim import random_viewport_size
+    width, height = random_viewport_size()
+    fp = {
+        "ua": random.choice(_USER_AGENTS),
+        "canvas_noise": random.uniform(-0.5, 0.5),
+        "audio_noise": random.uniform(-0.0001, 0.0001),
+        "hw_concur": random.choice([4, 6, 8, 12, 16]),
+        "webgl_vendor": random.choice([
+            "Google Inc. (NVIDIA)", "Google Inc. (Intel)", "Google Inc. (AMD)",
+        ]),
+        "webgl_renderer": random.choice([
+            "ANGLE (NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0)",
+            "ANGLE (Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0)",
+            "ANGLE (AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0)",
+        ]),
+        "width": width,
+        "height": height
+    }
+    
+    try:
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        with open(fp_path, "w", encoding="utf-8") as f:
+            json.dump(fp, f, indent=4)
+        logger.info("[Browser] Generated and saved new persistent fingerprint.")
+    except Exception as e:
+        logger.error(f"[Browser] Failed to save fingerprint: {e}")
+        
+    return fp
 def _get_chrome_executable_paths() -> list[Path]:
     paths: list[Path] = []
     if sys.platform == "win32":
@@ -104,7 +130,7 @@ def _detect_chrome_version_main() -> int | None:
     return None
 
 
-def _build_stealth_script() -> str:
+def _build_stealth_script(fp: dict) -> str:
     """
     Returns a JavaScript string injected into every page via CDP.
     Spoofs the most common bot-detection fingerprinting vectors:
@@ -143,7 +169,7 @@ def _build_stealth_script() -> str:
 
     // ── hardwareConcurrency ──────────────────────────────────────────
     Object.defineProperty(navigator, 'hardwareConcurrency', {{
-        get: () => {_HW_CONCUR}
+        get: () => {fp["hw_concur"]}
     }});
 
     // ── languages ────────────────────────────────────────────────────
@@ -165,15 +191,15 @@ def _build_stealth_script() -> str:
         }};
     }}
 
-    // ── Canvas fingerprint noise ({_CANVAS_NOISE:.6f}) ──────────────
+    // ── Canvas fingerprint noise ({fp["canvas_noise"]:.6f}) ──────────────
     const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
     HTMLCanvasElement.prototype.toDataURL = function(type) {{
         const ctx = this.getContext('2d');
         if (ctx) {{
             const imageData = ctx.getImageData(0, 0, this.width, this.height);
             for (let i = 0; i < imageData.data.length; i += 4) {{
-                imageData.data[i]     = Math.min(255, imageData.data[i]     + {round(_CANVAS_NOISE)});
-                imageData.data[i + 1] = Math.min(255, imageData.data[i + 1] + {round(_CANVAS_NOISE)});
+                imageData.data[i]     = Math.min(255, imageData.data[i]     + {round(fp["canvas_noise"])});
+                imageData.data[i + 1] = Math.min(255, imageData.data[i + 1] + {round(fp["canvas_noise"])});
             }}
             ctx.putImageData(imageData, 0, 0);
         }}
@@ -183,20 +209,20 @@ def _build_stealth_script() -> str:
     // ── WebGL vendor / renderer ──────────────────────────────────────
     const getParamOrig = WebGLRenderingContext.prototype.getParameter;
     WebGLRenderingContext.prototype.getParameter = function(parameter) {{
-        if (parameter === 37445) return '{_WEBGL_VENDOR}';
-        if (parameter === 37446) return '{_WEBGL_RENDERER}';
+        if (parameter === 37445) return '{fp["webgl_vendor"]}';
+        if (parameter === 37446) return '{fp["webgl_renderer"]}';
         return getParamOrig.call(this, parameter);
     }};
     if (typeof WebGL2RenderingContext !== 'undefined') {{
         const getParam2Orig = WebGL2RenderingContext.prototype.getParameter;
         WebGL2RenderingContext.prototype.getParameter = function(parameter) {{
-            if (parameter === 37445) return '{_WEBGL_VENDOR}';
-            if (parameter === 37446) return '{_WEBGL_RENDERER}';
+            if (parameter === 37445) return '{fp["webgl_vendor"]}';
+            if (parameter === 37446) return '{fp["webgl_renderer"]}';
             return getParam2Orig.call(this, parameter);
         }};
     }}
 
-    // ── AudioContext noise ({_AUDIO_NOISE:.8f}) ──────────────────────
+    // ── AudioContext noise ({fp["audio_noise"]:.8f}) ──────────────────────
     const AudioContextOrig = window.AudioContext || window.webkitAudioContext;
     if (AudioContextOrig) {{
         const origCreateOscillator = AudioContextOrig.prototype.createOscillator;
@@ -205,7 +231,7 @@ def _build_stealth_script() -> str:
             const origConnect = osc.connect.bind(osc);
             osc.connect = function(dest) {{
                 const gainNode = this.context.createGain();
-                gainNode.gain.value = 1 + {_AUDIO_NOISE:.8f};
+                gainNode.gain.value = 1 + {fp["audio_noise"]:.8f};
                 origConnect(gainNode);
                 gainNode.connect(dest);
                 return dest;
@@ -241,12 +267,17 @@ def create_driver():
         # ── Persistent bot profile (sessions, cookies, localStorage) ──
         # Derive path relative to project root so it works on any drive/install.
         _project_root = Path(__file__).resolve().parents[1]
-        user_data_dir = str(_project_root / "bot_chrome_profile")
+        profile_path = _project_root / "bot_chrome_profile"
+        user_data_dir = str(profile_path)
+        
+        # Load or generate persistent fingerprint
+        fp = _load_or_generate_fingerprint(profile_path)
+
         options.add_argument(f"--user-data-dir={user_data_dir}")
         options.add_argument("--profile-directory=Default")
 
-        # ── Random User-Agent ─────────────────────────────────────────
-        ua = random.choice(_USER_AGENTS)
+        # ── Persistent User-Agent ─────────────────────────────────────────
+        ua = fp["ua"]
         options.add_argument(f"--user-agent={ua}")
         logger.info(f"[Browser] User-Agent: {ua[:60]}...")
 
@@ -259,8 +290,8 @@ def create_driver():
         options.add_argument("--disable-notifications")
         options.add_argument("--disable-infobars")
 
-        # ── Random viewport ───────────────────────────────────────────
-        width, height = random_viewport_size()
+        # ── Persistent viewport ───────────────────────────────────────────
+        width, height = fp["width"], fp["height"]
         options.add_argument(f"--window-size={width},{height}")
         logger.info(f"[Browser] Viewport: {width}x{height}")
 
@@ -270,13 +301,13 @@ def create_driver():
         chrome_major = _detect_chrome_version_main()
         if chrome_major is not None:
             logger.info(f"[Browser] Detected Chrome major version {chrome_major}")
-            driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_major)
+            driver = uc.Chrome(options=options, use_subprocess=True, user_data_dir=user_data_dir, version_main=chrome_major)
         else:
             logger.info("[Browser] Chrome version unknown; using auto-detect")
-            driver = uc.Chrome(options=options, use_subprocess=True)
+            driver = uc.Chrome(options=options, use_subprocess=True, user_data_dir=user_data_dir)
 
         # ── Inject full stealth script via CDP ────────────────────────
-        stealth_js = _build_stealth_script()
+        stealth_js = _build_stealth_script(fp)
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": stealth_js
         })

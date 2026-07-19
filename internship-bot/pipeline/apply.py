@@ -50,6 +50,7 @@ def run_apply(
     from agent.interview_prep import generate_interview_prep
     from tracker.sheets import log_application
     from utils.browser import create_driver
+    from utils.live_monitor import push_update
 
     platforms = {
         "internshala": InternshalaPlatform(),
@@ -139,6 +140,17 @@ def run_apply(
                 company = listing.get("company", "Unknown")
                 logger.info("[Apply] → %s @ %s (%s)", title, company, src)
 
+                push_update(
+                    status="running",
+                    current_platform=src,
+                    current_listing=f"{title} @ {company}",
+                    current_step="Generating cover note...",
+                    applied_count=sum(applied_counts.values()),
+                    skipped_count=len(dry_run) + len(manual),
+                    error_count=error_count,
+                    event={"message": f"Starting application for {title} @ {company}"}
+                )
+
                 # Cover note
                 try:
                     cover = generate_cover_note(listing, profile)
@@ -147,6 +159,13 @@ def run_apply(
                     cover = ""
 
                 # Apply
+                push_update(
+                    current_platform=src,
+                    current_listing=f"{title} @ {company}",
+                    current_step="Filling application form...",
+                    applied_count=sum(applied_counts.values()),
+                    error_count=error_count
+                )
                 try:
                     result = platform.apply(listing, cover, profile, driver)
                 except Exception as exc:
@@ -182,6 +201,17 @@ def run_apply(
                 except Exception as exc:
                     logger.error("[Apply] Failed to log application: %s", exc)
 
+                # Push final status for this listing
+                push_update(
+                    current_platform=src,
+                    current_listing=f"{title} @ {company}",
+                    current_step="Finished",
+                    applied_count=sum(applied_counts.values()),
+                    skipped_count=len(dry_run) + len(manual),
+                    error_count=error_count,
+                    event={"message": f"Result: {status}"}
+                )
+
     finally:
         if driver:
             try:
@@ -192,5 +222,15 @@ def run_apply(
     logger.info(
         "[Apply] Done — applied=%d, manual=%d, dry_run=%d, errors=%d",
         len(applied), len(manual), len(dry_run), error_count
+    )
+    push_update(
+        status="idle",
+        current_platform="",
+        current_listing="",
+        current_step="",
+        applied_count=len(applied),
+        skipped_count=len(dry_run) + len(manual),
+        error_count=error_count,
+        event={"message": "Application pipeline finished."}
     )
     return applied, manual, dry_run, error_count

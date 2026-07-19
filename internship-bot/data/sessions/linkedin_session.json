@@ -1,0 +1,19 @@
+{
+  "domain": "linkedin.com",
+  "capturedAt": "2026-07-19T05:25:25.641984Z",
+  "cookies": [
+    {
+      "name": "li_at",
+      "value": "AQED_TEST_COOKIE_VALUE",
+      "domain": ".linkedin.com",
+      "path": "/",
+      "secure": true,
+      "httpOnly": true,
+      "sameSite": "None",
+      "expirationDate": 1784525125.6419938
+    }
+  ],
+  "localStorage": {
+    "test_key": "test_value"
+  }
+}

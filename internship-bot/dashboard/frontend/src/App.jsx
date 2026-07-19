@@ -46,7 +46,7 @@ function Sidebar({ activePage, setActivePage, session }) {
 }
 
 // ── Overview Page ───────────────────────────────────────────────────────────
-function OverviewPage({ stats, session, runStatus, events, onStart, onStop }) {
+function OverviewPage({ stats, session, runStatus, events, sessionStatus, onStart, onStop, onDisconnectSession }) {
   return (
     <>
       <div className="page-header">
@@ -156,6 +156,49 @@ function OverviewPage({ stats, session, runStatus, events, onStart, onStop }) {
                 </div>
               ))
             )}
+          </div>
+        </div>
+      </div>
+
+      {/* Connected Sessions */}
+      <div className="live-session-card" style={{ marginTop: '1.5rem', gridTemplateColumns: '1fr' }}>
+        <div className="glass-card">
+          <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem' }}>
+            🔗 Connected Sessions
+          </h3>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+            Install the ApplyFlow Chrome extension, log into each platform normally in a regular tab, then click Capture Session in the extension popup.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+            {['linkedin', 'naukri', 'internshala', 'unstop'].map(plat => {
+              const status = sessionStatus[plat] || { connected: false }
+              return (
+                <div key={plat} style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--radius)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{plat}</span>
+                    {status.connected ? (
+                      status.stale ? 
+                        <span className="status-pill warning">Stale</span> :
+                        <span className="status-pill success">Connected</span>
+                    ) : (
+                      <span className="status-pill idle">Not connected</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    {status.connected && status.capturedAt ? `Captured: ${new Date(status.capturedAt).toLocaleDateString()}` : 'No session'}
+                  </div>
+                  {status.connected && (
+                    <button 
+                      className="btn btn-secondary" 
+                      style={{ padding: '4px 8px', fontSize: '0.75rem', marginTop: 'auto' }}
+                      onClick={() => onDisconnectSession(plat)}
+                    >
+                      Disconnect
+                    </button>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
       </div>
@@ -470,6 +513,7 @@ function App() {
   const [scheduleConfig, setScheduleConfig] = useState({ enabled: false, days: ['mon', 'tue', 'wed', 'thu', 'fri'], time: '09:00', dry_run: true })
   const [runStatus, setRunStatus] = useState({ is_running: false, started_at: null, next_run: null, schedule_enabled: false })
   const [events, setEvents] = useState([])
+  const [sessionStatus, setSessionStatus] = useState({})
   const wsRef = useRef(null)
 
   const fetchStats = useCallback(async () => {
@@ -534,6 +578,16 @@ function App() {
     } catch (err) { console.debug('Session fetch failed:', err) }
   }, [])
 
+  const fetchSessionStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/session/status`)
+      if (res.ok) {
+        const data = await res.json()
+        setSessionStatus(data)
+      }
+    } catch (err) { console.debug('Session status fetch failed:', err) }
+  }, [])
+
   // WebSocket connection for real-time events
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -571,17 +625,20 @@ function App() {
     fetchSession()
     fetchScheduleConfig()
     fetchStatus()
+    fetchSessionStatus()
 
     const statsInterval = setInterval(fetchStats, 3000)
     const sessionInterval = setInterval(fetchSession, 2000)
     const statusInterval = setInterval(fetchStatus, 2000)
+    const sessionStatusInterval = setInterval(fetchSessionStatus, 5000)
 
     return () => {
       clearInterval(statsInterval)
       clearInterval(sessionInterval)
       clearInterval(statusInterval)
+      clearInterval(sessionStatusInterval)
     }
-  }, [fetchStats, fetchSession, fetchScheduleConfig, fetchStatus])
+  }, [fetchStats, fetchSession, fetchScheduleConfig, fetchStatus, fetchSessionStatus])
 
   // Fetch page-specific data when page changes
   useEffect(() => {
@@ -642,6 +699,15 @@ function App() {
     return false
   }
 
+  const handleDisconnectSession = async (platform) => {
+    try {
+      await fetch(`${API_BASE}/api/session/${platform}`, { method: 'DELETE' })
+      fetchSessionStatus()
+    } catch (err) {
+      console.error('Disconnect failed:', err)
+    }
+  }
+
   return (
     <div className="dashboard-layout">
       <Sidebar activePage={activePage} setActivePage={setActivePage} session={session} />
@@ -653,8 +719,10 @@ function App() {
             session={session}
             events={events}
             runStatus={runStatus}
+            sessionStatus={sessionStatus}
             onStart={handleStart}
             onStop={handleStop}
+            onDisconnectSession={handleDisconnectSession}
           />
         )}
         {activePage === 'applications' && <ApplicationsPage applications={applications} />}
