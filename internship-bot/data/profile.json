@@ -1,6 +1,7 @@
 {
+  "id": null,
+  "user_id": null,
   "name": "Aditya Lohar",
-  "email": "adityalohar00030@gmail.com",
   "phone": "",
   "location": "Jalgaon, Maharashtra",
   "degree": "B.Tech Computer Engineering",
@@ -91,27 +92,5 @@
   "internshala_email": "",
   "linkedin_email": "",
   "naukri_email": "",
-  "unstop_email": "",
-  "preferred_cities": [
-    "Bengaluru",
-    "Pune",
-    "Hyderabad",
-    "Mumbai",
-    "Remote"
-  ],
-  "avoid_companies": [],
-  "min_stipend": 0,
-  "job_types": [
-    "internship",
-    "full-time",
-    "contract"
-  ],
-  "countries": [
-    "India"
-  ],
-  "target_companies": [
-    "google.com",
-    "amazon.jobs",
-    "microsoft.com"
-  ]
+  "unstop_email": ""
 }

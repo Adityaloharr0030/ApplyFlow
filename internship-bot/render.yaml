@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: applyflow-api
+    env: docker
+    dockerfilePath: ./Dockerfile.web
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        value: "*"
