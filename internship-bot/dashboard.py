@@ -41,6 +41,11 @@ def verify_api_key(api_key: str = Depends(api_key_header)):
     # Local mode: completely skip API key verification since auth is removed
     return api_key
 
+@app.on_event("startup")
+def on_startup():
+    from core.db import init_db
+    init_db()
+
 # Allow CORS for the Vite frontend
 app.add_middleware(
     CORSMiddleware,
@@ -719,6 +724,8 @@ def save_platforms(data: dict):
 if __name__ == "__main__":
     import uvicorn
     import os
+    from core.db import init_db
+    init_db()  # Ensure tables are created on boot
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("dashboard:app", host="0.0.0.0", port=port, reload=False)
 
