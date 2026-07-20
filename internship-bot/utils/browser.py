@@ -253,14 +253,17 @@ def create_driver():
         logger.info("[Browser] Launching Chrome with dedicated bot profile...")
 
         if sys.platform == "win32":
-            os.system("taskkill /F /IM chrome.exe /T >nul 2>&1")
-            os.system("taskkill /F /IM undetected_chromedriver.exe /T >nul 2>&1")
+            # Only kill the undetected_chromedriver executable, NOT all chrome.exe processes
+            # (killing all chrome.exe would close the user's open browser windows)
             uc_exe = os.path.join(os.getenv("APPDATA", ""), "undetected_chromedriver", "undetected_chromedriver.exe")
             if os.path.exists(uc_exe):
                 try:
                     os.remove(uc_exe)
+                    logger.debug("[Browser] Removed stale undetected_chromedriver.exe")
                 except Exception:
                     pass
+            # Kill only orphaned chromedriver processes, not user Chrome
+            os.system("taskkill /F /IM undetected_chromedriver.exe /T >nul 2>&1")
 
         options = uc.ChromeOptions()
 

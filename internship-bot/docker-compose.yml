@@ -1,0 +1,40 @@
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: applyflow
+      POSTGRES_PASSWORD: applyflow_password
+      POSTGRES_DB: applyflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  web:
+    build: 
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://applyflow:applyflow_password@db:5432/applyflow
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    depends_on:
+      - db
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://applyflow:applyflow_password@db:5432/applyflow
+
+volumes:
+  postgres_data:

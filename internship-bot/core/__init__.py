@@ -1,7 +1,7 @@
-from core.models import CandidateProfile, JobListing, ApplicationResult, profile_from_dict, listing_from_dict
+from core.models import UserProfile, JobListing, ApplicationResult, profile_from_dict, listing_from_dict
 
 __all__ = [
-    "CandidateProfile",
+    "UserProfile",
     "JobListing",
     "ApplicationResult",
     "profile_from_dict",

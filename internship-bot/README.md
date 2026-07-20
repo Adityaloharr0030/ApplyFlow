@@ -95,6 +95,30 @@ python main.py --run-now
 - `⚠️ {platform} blocked after repeated CAPTCHA — pausing for today` — circuit breaker alert
 - End-of-run digest summary
 
+## 🚀 Production Deployment (Docker + PostgreSQL)
+
+ApplyFlow is designed to be deployed to a cloud server using Docker.
+
+1. Ensure Docker Desktop is running or you are on a Linux server with Docker installed.
+2. Provide a PostgreSQL connection string in `.env` as `DATABASE_URL`, or use the built-in database container by running:
+   ```bash
+   docker compose up -d
+   ```
+3. The dashboard will be available on `http://localhost:8000` (API) and the frontend on the configured port.
+4. The background `worker` container automatically polls the database for new job requests and runs them headlessly.
+
+---
+
+## 🏗 Architecture & Modules
+
+- **`dashboard.py`**: Unified FastAPI application serving both the React frontend and API routes.
+- **`worker.py`**: A background process that safely consumes run-jobs from the database.
+- **`core/models.py`**: SQLModel schemas that ensure tight data validation across the system.
+- **`agent/filter.py`**: Core LLM scoring logic.
+- **`core/logger.py`**: Structured error tracking via the PostgreSQL database.
+
+---
+
 ## Safety Features
 
 - **DRY_RUN=true** (default): Scrapes, scores, generates cover letters, sends notifications, but never clicks Submit or sends real emails
@@ -102,6 +126,9 @@ python main.py --run-now
 - **Daily Caps**: Configurable per-platform limits to avoid account bans
 - **Random Delays**: 2-5 second delays between all requests
 - **One Session Per Run**: Single browser session reused across all listings per platform
+- **Auto-Apply**: Submits applications completely in the background using headless Chrome.
+- **Production Ready**: Fully Dockerized with a PostgreSQL database, background job queue (`worker.py`), and a unified FastAPI dashboard.
+- **Smart Filtering**: Uses LLMs (Gemini/Groq) to read job descriptions and skip irrelevant listings.
 
 ## Architecture
 

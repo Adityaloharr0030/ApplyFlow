@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import time
+import sys
 from pathlib import Path
 from datetime import datetime
 
@@ -22,15 +23,32 @@ def load_session_into_driver(driver, platform: str) -> bool:
         
     try:
         with open(session_file, "r", encoding="utf-8") as f:
-            session_data = json.load(f)
+            at_rest_data = json.load(f)
             
         # Check staleness (7 days)
-        if "capturedAt" in session_data:
-            captured_dt = datetime.fromisoformat(session_data["capturedAt"].replace("Z", "+00:00"))
+        if "capturedAt" in at_rest_data:
+            captured_dt = datetime.fromisoformat(at_rest_data["capturedAt"].replace("Z", "+00:00"))
             age = (datetime.now().astimezone() - captured_dt).days
             if age > 7:
                 logger.warning(f"[Session] Captured session for {platform} is stale (>7 days old). Ignoring.")
                 return False
+                
+        # Decrypt payload
+        # Ensure we can import the key securely
+        sys.path.append(str(Path(__file__).resolve().parents[1]))
+        try:
+            from dashboard import get_aesgcm_key
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            
+            key = get_aesgcm_key()
+            aesgcm = AESGCM(key)
+            ciphertext = bytes(at_rest_data["encrypted_blob"])
+            iv = bytes(at_rest_data["iv"])
+            plaintext = aesgcm.decrypt(iv, ciphertext, None)
+            session_data = json.loads(plaintext.decode('utf-8'))
+        except Exception as e:
+            logger.error(f"[Session] Failed to decrypt session payload for {platform}: {e}")
+            return False
                 
         domain = session_data.get("domain", "")
         if not domain:

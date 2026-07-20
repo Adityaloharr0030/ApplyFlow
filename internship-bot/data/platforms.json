@@ -1,0 +1,26 @@
+{
+  "internshala": {
+    "enabled": true,
+    "max_applies": 10
+  },
+  "linkedin": {
+    "enabled": true,
+    "max_applies": 15
+  },
+  "indeed": {
+    "enabled": true,
+    "max_applies": 10
+  },
+  "unstop": {
+    "enabled": true,
+    "max_applies": 5
+  },
+  "naukri": {
+    "enabled": true,
+    "max_applies": 10
+  },
+  "cold_email": {
+    "enabled": false,
+    "max_applies": 5
+  }
+}

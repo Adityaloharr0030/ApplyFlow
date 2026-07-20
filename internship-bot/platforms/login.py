@@ -30,7 +30,7 @@ def _save_debug_snapshot(driver, reason: str):
         debug_dir = Path("debug")
         debug_dir.mkdir(parents=True, exist_ok=True)
         
-        timestamp = datetime.now().strftime("%Y%md_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         prefix = f"{reason.replace(' ', '_')}_{timestamp}"
         
         screenshot_path = debug_dir / f"{prefix}.png"
@@ -716,8 +716,142 @@ def login_naukri(driver) -> bool:
         logger.info("[Login] ✓ Naukri login likely succeeded (redirected away from login page)")
         return True
 
+
     except Exception as e:
         logger.error(f"[Login] ✗ Naukri login failed with exception: {e}")
+        return False
+
+
+def login_indeed(driver) -> bool:
+    """
+    Log into Indeed.
+    Indeed uses Google OAuth — we try to inject a captured session first,
+    then fall back to email/password login if available.
+    Returns True if login succeeds or already logged in.
+    """
+    try:
+        # Try injecting a captured session first
+        if load_session_into_driver(driver, "indeed"):
+            driver.get("https://www.indeed.com/")
+            _wait_for_page_load(driver)
+            time.sleep(random.uniform(0.5, 1.0))
+            page_src = driver.page_source.lower()
+            if "sign in" not in page_src and "log in" not in page_src:
+                logger.info("[Login] ✓ Using captured session for Indeed")
+                return True
+            logger.warning("[Login] Captured session for Indeed failed, falling back to credentials.")
+
+        # Check if already logged in
+        driver.get("https://www.indeed.com/")
+        _wait_for_page_load(driver)
+        time.sleep(random.uniform(0.5, 1.0))
+
+        page_src = driver.page_source.lower()
+        current_url = driver.current_url.lower()
+
+        # If we're on a user dashboard / no sign-in prompt, already logged in
+        if "my jobs" in page_src or "resume" in page_src or "account" in current_url:
+            logger.info("[Login] ✓ Already logged into Indeed (session active)")
+            return True
+
+        # Try email/password login
+        email = os.getenv("INDEED_EMAIL", os.getenv("GMAIL_ADDRESS", ""))
+        password = os.getenv("INDEED_PASSWORD", "")
+
+        if not email or not password:
+            logger.warning("[Login] ✗ No Indeed credentials — use the Chrome Extension to capture a session instead")
+            return False
+
+        logger.info("[Login] Logging into Indeed via email/password...")
+        driver.get("https://secure.indeed.com/auth")
+        time.sleep(random.uniform(2.0, 3.5))
+
+        # Step 1: Enter email
+        email_field = _wait_and_find(driver,
+            "input[type='email'], input[name='__email'], input[autocomplete='email']",
+            timeout=10
+        )
+        if not email_field:
+            logger.error("[Login] ✗ Could not find email field on Indeed login page")
+            _save_debug_snapshot(driver, "indeed_no_email_field")
+            return False
+
+        email_field.clear()
+        email_field.send_keys(email)
+        time.sleep(random.uniform(0.5, 1.0))
+
+        # Click Continue
+        continue_btn = _find_button_by_text(driver, ["continue", "next", "sign in"], timeout=8)
+        if not continue_btn:
+            continue_btn = _wait_and_find(driver, "button[type='submit'], button[data-testid='auth-page-email-confirm-button']", timeout=8)
+        if continue_btn:
+            try:
+                continue_btn.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", continue_btn)
+            time.sleep(random.uniform(2.0, 3.0))
+        else:
+            logger.warning("[Login] Indeed: Could not find Continue button, trying to find password field directly")
+
+        # Step 2: Enter password (may appear on same or next page)
+        password_field = _wait_and_find(driver,
+            "input[type='password'], input[name='__password']",
+            timeout=10
+        )
+        if not password_field:
+            logger.error("[Login] ✗ Could not find password field on Indeed (may require Google OAuth or 2FA)")
+            _save_debug_snapshot(driver, "indeed_no_password_field")
+            return False
+
+        password_field.clear()
+        password_field.send_keys(password)
+        time.sleep(random.uniform(0.5, 1.0))
+
+        sign_in_btn = _find_button_by_text(driver, ["sign in", "log in", "continue"], timeout=8)
+        if not sign_in_btn:
+            sign_in_btn = _wait_and_find(driver, "button[type='submit']", timeout=8)
+        if sign_in_btn:
+            try:
+                sign_in_btn.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", sign_in_btn)
+        else:
+            logger.error("[Login] ✗ Could not find Sign In button on Indeed")
+            return False
+
+        time.sleep(random.uniform(3.0, 5.0))
+
+        # Handle security challenge in non-headless mode
+        current_url = driver.current_url.lower()
+        if "challenge" in current_url or "captcha" in current_url or "verify" in current_url:
+            if os.getenv("HEADLESS", "true").lower() == "false":
+                logger.warning("[Login] ⚠️ Indeed security check! You have 60 seconds to complete it manually...")
+                for _ in range(20):
+                    time.sleep(3)
+                    if "indeed.com" in driver.current_url and "auth" not in driver.current_url:
+                        logger.info("[Login] ✓ Indeed security check passed!")
+                        break
+                else:
+                    logger.error("[Login] ✗ Indeed security check timeout")
+                    _save_debug_snapshot(driver, "indeed_challenge_timeout")
+                    return False
+            else:
+                logger.error("[Login] ✗ Indeed security check in headless mode — use HEADLESS=false or capture session via Chrome Extension")
+                _save_debug_snapshot(driver, "indeed_challenge_headless")
+                return False
+
+        # Verify login
+        page_src = driver.page_source.lower()
+        current_url = driver.current_url.lower()
+        if "auth" not in current_url or "my jobs" in page_src or "resume" in page_src:
+            logger.info("[Login] ✅ Successfully logged into Indeed!")
+            return True
+
+        logger.warning("[Login] ⚠️ Indeed login status unclear — proceeding anyway")
+        return True
+
+    except Exception as e:
+        logger.error(f"[Login] ✗ Indeed login failed with exception: {e}")
         return False
 
 
@@ -727,5 +861,6 @@ LOGIN_HANDLERS = {
     "linkedin": login_linkedin,
     "unstop": login_unstop,
     "naukri": login_naukri,
-    # indeed and generic_web don't need login
+    "indeed": login_indeed,
+    # generic_web doesn't need login
 }

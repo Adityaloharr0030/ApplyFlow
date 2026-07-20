@@ -1,11 +1,35 @@
 const API_URL = "http://localhost:8000/api/session/upload";
-const STATIC_KEY = "applyflow_mvp_secret_key_1234567"; // 32 chars for AES-256
+const KEY_URL = "http://localhost:8000/api/session/key";
 
-async function encryptData(dataStr) {
+async function getApiKey() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["applyflowApiKey"], (result) => {
+      let key = result.applyflowApiKey;
+      if (!key) {
+        key = prompt("Please enter your Dashboard API Key to continue:");
+        if (key) {
+          chrome.storage.local.set({ applyflowApiKey: key });
+        }
+      }
+      resolve(key);
+    });
+  });
+}
+
+async function fetchSecretKey(apiKey) {
+  const res = await fetch(KEY_URL, {
+    headers: { "X-API-Key": apiKey }
+  });
+  if (!res.ok) throw new Error("Failed to fetch secret key. Is the API Key correct?");
+  const data = await res.json();
+  return data.key;
+}
+
+async function encryptData(dataStr, secretKey) {
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
     "raw",
-    enc.encode(STATIC_KEY),
+    enc.encode(secretKey),
     { name: "PBKDF2" },
     false,
     ["deriveBits", "deriveKey"]
@@ -89,11 +113,18 @@ document.addEventListener("DOMContentLoaded", () => {
           domain: domain
         };
 
-        const { ciphertext, iv } = await encryptData(JSON.stringify(sessionData));
+        const apiKey = await getApiKey();
+        if (!apiKey) throw new Error("API Key is required to capture sessions.");
+
+        const secretKey = await fetchSecretKey(apiKey);
+        const { ciphertext, iv } = await encryptData(JSON.stringify(sessionData), secretKey);
 
         const response = await fetch(API_URL, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "X-API-Key": apiKey
+          },
           body: JSON.stringify({
             platform: platformId,
             encrypted_blob: ciphertext,

@@ -1,22 +1,36 @@
+from dotenv import load_dotenv
+load_dotenv()
 import os
 import sys
 import time
 import subprocess
 import asyncio
 import json
+import re
+import threading
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Depends
+from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import base64
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
-app = FastAPI(title="ApplyFlow Dashboard API")
+app = FastAPI(title="ApplyFlow Dashboard API", version="2.0.0")
+
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+def verify_api_key(api_key: str = Depends(api_key_header)):
+    # Local mode: completely skip API key verification since auth is removed
+    return api_key
 
 # Allow CORS for the Vite frontend
 app.add_middleware(
@@ -30,14 +44,29 @@ app.add_middleware(
 BASE_DIR = Path(__file__).resolve().parent
 LOGS_DIR = BASE_DIR / "logs"
 CSV_PATH = LOGS_DIR / "applications.csv"
+SESSION_DIR = BASE_DIR / "data" / "sessions"
+SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
-# Track the currently running bot process
-_bot_process: subprocess.Popen | None = None
-_bot_started_at: Optional[str] = None
+# Schedule files
+SCHEDULE_CONFIG_FILE = BASE_DIR / "data" / "schedule_config.json"
+VALID_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+DEFAULT_SCHEDULE_CONFIG = {
+    "enabled": False,
+    "days": ["mon", "tue", "wed", "thu", "fri"],
+    "time": "09:00",
+    "dry_run": True,
+}
+TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
-# ── Live session state (written by the bot via /api/session/update) ────────────
-_live_session: dict = {
-    "status": "idle",
+scheduler = BackgroundScheduler()
+current_process: Optional[subprocess.Popen] = None
+current_process_started_at: Optional[datetime] = None
+current_process_lock = threading.Lock()
+
+# ── Session State ──────────────────────────────────────────────────────────────
+session_state = {
+    "status": "idle",  # idle, running, paused
+    "started_at": None,
     "current_platform": "",
     "current_listing": "",
     "current_step": "",
@@ -46,14 +75,14 @@ _live_session: dict = {
     "error_count": 0,
     "events": [],
 }
-_ws_clients: list[WebSocket] = []
+ws_clients: list[WebSocket] = []
 
-SESSION_DIR = BASE_DIR / "data" / "sessions"
-SESSION_DIR.mkdir(parents=True, exist_ok=True)
-STATIC_KEY = b"applyflow_mvp_secret_key_1234567"
 STATIC_SALT = b"applyflow_salt"
 
 def get_aesgcm_key():
+    secret = os.getenv("SESSION_SECRET_KEY")
+    if not secret:
+        raise ValueError("SESSION_SECRET_KEY is missing from environment")
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     from cryptography.hazmat.primitives import hashes
     kdf = PBKDF2HMAC(
@@ -62,175 +91,485 @@ def get_aesgcm_key():
         salt=STATIC_SALT,
         iterations=100000,
     )
-    return kdf.derive(STATIC_KEY)
+    return kdf.derive(secret.encode('utf-8'))
 
 # ──────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────
-
-def load_data() -> pd.DataFrame:
-    if not CSV_PATH.exists():
-        return pd.DataFrame()
-
-    try:
-        df = pd.read_csv(CSV_PATH)
-        expected_cols = ["Date", "Company", "Role", "Location", "Source",
-                         "Status", "Score", "Apply URL", "Cover Note Preview"]
-        for col in expected_cols:
-            if col not in df.columns:
-                df[col] = ""
-        df = df.sort_values(by="Date", ascending=False).reset_index(drop=True)
-        return df
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        return pd.DataFrame()
-
-
 def get_latest_log_file() -> Path | None:
     log_files = list(LOGS_DIR.glob("run_*.log"))
     if not log_files:
         return None
     return max(log_files, key=os.path.getctime)
 
+def load_csv() -> pd.DataFrame:
+    if not CSV_PATH.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(CSV_PATH)
+    except Exception:
+        return pd.DataFrame()
 
-def _spawn_bot(cmd: list[str], headless: bool) -> subprocess.Popen:
-    """
-    Spawn the bot subprocess.
-    - headless=False → Chrome opens visibly on screen (CREATE_NEW_CONSOLE on Windows).
-    - headless=True  → silent background process.
-    """
-    env = os.environ.copy()
-    env["HEADLESS"] = "false" if not headless else "true"
+def clean_dataframe_for_json(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df = df.where(pd.notnull(df), None)
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].apply(lambda v: v.isoformat() if v is not None else None)
+    return df
 
-    kwargs: dict = {"cwd": str(BASE_DIR), "env": env}
+def load_schedule_config() -> dict:
+    try:
+        if SCHEDULE_CONFIG_FILE.exists():
+            with open(SCHEDULE_CONFIG_FILE, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                if isinstance(config, dict):
+                    return {**DEFAULT_SCHEDULE_CONFIG, **config}
+    except Exception:
+        pass
+    return DEFAULT_SCHEDULE_CONFIG.copy()
 
-    if not headless and sys.platform == "win32":
-        # CREATE_NEW_CONSOLE (0x10) gives the subprocess its own console window
-        # and ensures Chrome's window is shown on the desktop.
-        kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+def save_schedule_config(config: dict):
+    try:
+        SCHEDULE_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(SCHEDULE_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+    except Exception as e:
+        raise Exception(f"Failed to save schedule config: {e}")
 
-    return subprocess.Popen(cmd, **kwargs)
+def validate_schedule_config(config: dict) -> dict:
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=400, detail="Schedule config must be an object.")
+    enabled = bool(config.get("enabled", False))
+    dry_run = bool(config.get("dry_run", True))
+    days = config.get("days")
+    time_str = config.get("time")
 
+    if not isinstance(days, list) or not days:
+        raise HTTPException(status_code=400, detail="Days must be a non-empty list of weekday codes.")
 
-# ──────────────────────────────────────────────────────────────
-# /api/applications  — full application list + metrics
-# ──────────────────────────────────────────────────────────────
+    normalized_days = []
+    for item in days:
+        if not isinstance(item, str):
+            raise HTTPException(status_code=400, detail="Each day code must be a string.")
+        normalized = item.strip().lower()[:3]
+        if normalized not in VALID_WEEKDAYS:
+            raise HTTPException(status_code=400, detail=f"Invalid weekday code: {item}")
+        normalized_days.append(normalized)
 
-@app.get("/api/applications")
-def get_applications():
-    """Returns all applications and aggregated metrics."""
-    df = load_data()
+    if not isinstance(time_str, str) or not TIME_PATTERN.match(time_str):
+        raise HTTPException(status_code=400, detail="Time must be a string in HH:MM 24h format.")
 
-    empty_response = {
-        "metrics": {
-            "total": 0, "applied": 0, "failed": 0,
-            "manual": 0, "skipped": 0, "average_score": 0.0
-        },
-        "applications": []
+    return {
+        "enabled": enabled,
+        "days": sorted(set(normalized_days), key=VALID_WEEKDAYS.index),
+        "time": time_str,
+        "dry_run": dry_run,
     }
 
-    if df.empty:
-        return empty_response
+def get_next_scheduled_run() -> Optional[str]:
+    if not scheduler.running or not scheduler.get_jobs():
+        return None
+    next_fire_times = [job.next_run_time for job in scheduler.get_jobs() if job.next_run_time is not None]
+    if not next_fire_times:
+        return None
+    next_dt = min(next_fire_times)
+    if next_dt.tzinfo is not None:
+        next_dt = next_dt.astimezone()
+    return next_dt.isoformat()
 
-    scores = pd.to_numeric(df["Score"], errors="coerce")
-    avg_score = float(scores.mean()) if not scores.isna().all() else 0.0
+def clear_schedule_jobs():
+    for job in scheduler.get_jobs():
+        scheduler.remove_job(job.id)
 
-    metrics = {
-        "total": len(df),
-        "applied": int(df["Status"].str.contains("Applied|Success", case=False, na=False).sum()),
-        "failed": int(df["Status"].str.contains("Error|Failed", case=False, na=False).sum()),
-        "manual": int(df["Status"].str.contains("Manual|Pending", case=False, na=False).sum()),
-        "skipped": int(df["Status"].str.contains("Skipped|Dry Run", case=False, na=False).sum()),
-        "average_score": round(avg_score, 1),
-    }
+def schedule_jobs_from_config(config: dict):
+    clear_schedule_jobs()
+    if not config.get("enabled", False):
+        return
+    hour, minute = map(int, config["time"].split(":"))
+    for day in config["days"]:
+        trigger = CronTrigger(day_of_week=day, hour=hour, minute=minute)
+        scheduler.add_job(
+            func=scheduled_run,
+            trigger=trigger,
+            id=f"applyflow_{day}_{config['time']}",
+            replace_existing=True,
+            name=f"ApplyFlow schedule {day} {config['time']}",
+        )
 
-    applications = df.where(pd.notnull(df), None).to_dict(orient="records")
-    return {"metrics": metrics, "applications": applications}
+def scheduled_run():
+    config = load_schedule_config()
+    with current_process_lock:
+        if current_process is not None and current_process.poll() is None:
+            print("[scheduler] Skipping scheduled run because bot is already running")
+            return
+    spawned = spawn_bot_process(dry_run=config.get("dry_run", True), headless=True)
+    if spawned:
+        print(f"[scheduler] Triggered scheduled bot run at {datetime.now().isoformat()}")
+    else:
+        print(f"[scheduler] Skipped scheduled bot run at {datetime.now().isoformat()} because another run is active")
 
+def spawn_bot_process(dry_run: bool, headless: bool = True, platform: Optional[str] = None, run_now: bool = True):
+    global current_process, current_process_started_at
+    with current_process_lock:
+        if current_process is not None and current_process.poll() is None:
+            return False
+
+        try:
+            cmd = [sys.executable, "main.py"]
+            if run_now:
+                cmd.append("--run-now")   # Always run immediately when launched from dashboard
+            if dry_run:
+                cmd.append("--dry-run")
+            if not headless:
+                cmd.append("--headed")
+            if platform and platform != "all":
+                cmd.extend(["--platform", platform])
+            
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            log_file = LOGS_DIR / f"run_{int(time.time())}.log"
+            out_file = open(log_file, "w", encoding="utf-8")
+            
+            current_process = subprocess.Popen(
+                cmd,
+                stdout=out_file,
+                stderr=subprocess.STDOUT,
+                cwd=str(BASE_DIR)
+            )
+            current_process_started_at = datetime.now()
+            
+            session_state["status"] = "running"
+            session_state["started_at"] = current_process_started_at.isoformat()
+            session_state["applied_count"] = 0
+            session_state["skipped_count"] = 0
+            session_state["error_count"] = 0
+            session_state["current_listing"] = ""
+            session_state["current_step"] = ""
+            session_state["current_platform"] = platform or "all"
+            session_state["events"] = [{"timestamp": datetime.now().isoformat(), "type": "info", "message": f"Bot process launched (PID {current_process.pid}) — {'DRY RUN' if dry_run else 'LIVE'}"}]
+            
+            # Background watcher: resets session_state once the process exits
+            proc_ref = current_process
+            def _watch_process():
+                proc_ref.wait()  # blocks until process exits
+                exit_code = proc_ref.returncode
+                # Only reset if this is still the current process (not a newer run)
+                if current_process is proc_ref:
+                    session_state["status"] = "idle"
+                    session_state["current_platform"] = ""
+                    session_state["current_step"] = ""
+                    session_state["events"].append({
+                        "timestamp": datetime.now().isoformat(),
+                        "type": "info" if exit_code == 0 else "error",
+                        "message": f"Bot process exited (code {exit_code})",
+                    })
+                print(f"[dashboard] Bot process exited with code {exit_code}")
+
+            t = threading.Thread(target=_watch_process, daemon=True)
+            t.start()
+            
+            return True
+        except Exception as e:
+            print(f"Failed to spawn bot run: {e}")
+            session_state["status"] = "idle"
+            return False
+
+def stop_bot_process() -> bool:
+    global current_process, current_process_started_at
+    with current_process_lock:
+        if current_process is None or current_process.poll() is not None:
+            current_process = None
+            current_process_started_at = None
+            return False
+        current_process.terminate()
+        try:
+            current_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            current_process.kill()
+            current_process.wait()
+        current_process = None
+        current_process_started_at = None
+        session_state["status"] = "idle"
+        return True
+
+@app.on_event("startup")
+def startup_scheduler():
+    from core.db import init_db
+    init_db()
+    
+    config = load_schedule_config()
+    if not SCHEDULE_CONFIG_FILE.exists():
+        save_schedule_config(config)
+    schedule_jobs_from_config(config)
+    if not scheduler.running:
+        scheduler.start()
+    print(f"[api] Scheduler started; enabled={config.get('enabled')} next_run={get_next_scheduled_run()}")
 
 # ──────────────────────────────────────────────────────────────
-# /api/stats  — lightweight summary for stat cards
+# Endpoints
 # ──────────────────────────────────────────────────────────────
+from pydantic import BaseModel, EmailStr
+from core.db import get_session
+from sqlmodel import Session
+from core.models import User, UserProfile
+from core.auth import get_password_hash, verify_password, create_access_token, get_current_user
+from fastapi.security import OAuth2PasswordRequestForm
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str
+    name: str = "Unknown Candidate"
+
+@app.post("/api/auth/register")
+def register_user(user: UserCreate, session: Session = Depends(get_session)):
+    from sqlmodel import select
+    if session.exec(select(User).where(User.email == user.email)).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+        
+    db_user = User(email=user.email, hashed_password=get_password_hash(user.password))
+    session.add(db_user)
+    session.commit()
+    session.refresh(db_user)
+    
+    db_profile = UserProfile(user_id=db_user.id, name=user.name)
+    session.add(db_profile)
+    session.commit()
+    
+    return {"message": "User registered successfully"}
+
+@app.post("/api/auth/login")
+def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_session)):
+    from sqlmodel import select
+    user = session.exec(select(User).where(User.email == form_data.username)).first()
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+        
+    access_token = create_access_token(data={"sub": user.id})
+    return {"access_token": access_token, "token_type": "bearer"}
+
 
 @app.get("/api/stats")
 def get_stats():
-    """Lightweight summary: total applied, today's count, success rate, and per-platform breakdown."""
-    df = load_data()
-
+    df = load_csv()
     if df.empty:
         return {
             "total_applied": 0,
             "today_applied": 0,
-            "success_rate": 0,
             "platforms": {},
+            "success_rate": 0,
             "recent": [],
+            "session": session_state,
         }
 
-    applied_mask = df["Status"].str.contains("Applied|Success", case=False, na=False)
-    applied_df = df[applied_mask]
+    try:
+        platforms = {}
+        platform_col = "Platform" if "Platform" in df.columns else "Source" if "Source" in df.columns else None
+        if platform_col:
+            platforms = {str(k): int(v) for k, v in df[platform_col].value_counts().to_dict().items()}
 
-    # Today's applications
-    today_str = date.today().strftime("%Y-%m-%d")
-    today_applied = 0
-    if "Date" in df.columns:
-        today_applied = int(
-            applied_df[applied_df["Date"].astype(str).str.startswith(today_str)].shape[0]
-        )
+        today_applied = 0
+        if "Date" in df.columns:
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            today_applied = len(df[df["Date"].astype(str).str.startswith(today_str, na=False)])
 
-    # Success rate = applied / total (excluding dry-runs)
-    total = len(df)
-    success_rate = round((len(applied_df) / total) * 100) if total > 0 else 0
+        success_rate = 0
+        if "Status" in df.columns:
+            total = len(df)
+            successes = len(df[df["Status"].astype(str).str.lower().isin(["applied", "success", "submitted"])])
+            success_rate = round((successes / total * 100) if total > 0 else 0, 1)
 
-    platforms = {}
-    if "Source" in applied_df.columns:
-        platforms = (
-            applied_df["Source"]
-            .str.strip()
-            .str.title()
-            .value_counts()
-            .to_dict()
-        )
+        recent = clean_dataframe_for_json(df.tail(10)).to_dict(orient="records")[::-1]
 
-    recent = df.head(5).where(pd.notnull(df.head(5)), None).to_dict(orient="records")
+        return {
+            "total_applied": int(len(df)),
+            "today_applied": int(today_applied),
+            "platforms": platforms,
+            "success_rate": float(success_rate),
+            "recent": recent,
+            "session": session_state,
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
-    return {
-        "total_applied": len(applied_df),
-        "today_applied": today_applied,
-        "success_rate": success_rate,
-        "platforms": platforms,
-        "recent": recent,
+@app.get("/api/applications")
+def get_applications():
+    df = load_csv()
+    if df.empty:
+        return {"metrics": {"total": 0, "applied": 0, "failed": 0, "manual": 0, "skipped": 0, "average_score": 0.0}, "applications": []}
+    
+    scores = pd.to_numeric(df.get("Score", pd.Series(dtype=float)), errors="coerce")
+    avg_score = float(scores.mean()) if not scores.isna().all() else 0.0
+
+    metrics = {
+        "total": len(df),
+        "applied": int(df.get("Status", pd.Series(dtype=str)).str.contains("Applied|Success", case=False, na=False).sum()),
+        "failed": int(df.get("Status", pd.Series(dtype=str)).str.contains("Error|Failed", case=False, na=False).sum()),
+        "manual": int(df.get("Status", pd.Series(dtype=str)).str.contains("Manual|Pending", case=False, na=False).sum()),
+        "skipped": int(df.get("Status", pd.Series(dtype=str)).str.contains("Skipped|Dry Run", case=False, na=False).sum()),
+        "average_score": round(avg_score, 1),
     }
 
+    try:
+        applications = clean_dataframe_for_json(df).to_dict(orient="records")[::-1]
+    except Exception:
+        applications = []
+    
+    return {"metrics": metrics, "applications": applications}
 
-# ──────────────────────────────────────────────────────────────
-# /api/logs  — last 100 lines (polled)
-# /api/logs/stream — Server-Sent Events live tail
-# ──────────────────────────────────────────────────────────────
 
-@app.get("/api/logs")
-def get_logs(lines: int = Query(default=100, ge=1, le=2000)):
-    """Return the last N lines of the most recent run log (default 100, max 2000)."""
-    latest = get_latest_log_file()
-    if not latest:
-        return {"logs": ["No logs found. Run the bot first."]}
+@app.get("/api/runs")
+def get_runs():
+    """
+    Return all bot runs grouped by log file / run date.
+    Each run contains metadata (date, stats) + the applications recorded during it.
+    """
+    df = load_csv()
+    if df.empty:
+        return {"runs": []}
 
     try:
-        with open(latest, "r", encoding="utf-8", errors="replace") as f:
-            raw_lines = f.readlines()[-lines:]
-        return {"logs": [line.rstrip("\n") for line in raw_lines]}
-    except Exception as e:
-        return {"logs": [f"Error reading logs: {e}"]}
+        # Parse dates; group by the date part to identify each run
+        df["_date"] = pd.to_datetime(df.get("Date", pd.Series(dtype=str)), errors="coerce")
+        df["_day"] = df["_date"].dt.strftime("%Y-%m-%d")
 
+        # Match each day to its log file for metadata
+        log_files: dict[str, dict] = {}
+        for lf in sorted(LOGS_DIR.glob("run_*.log"), reverse=True):
+            stem = lf.stem  # e.g. run_2026-07-19
+            day = stem.replace("run_", "")
+            if len(day) == 10:  # YYYY-MM-DD format
+                mtime = datetime.fromtimestamp(lf.stat().st_mtime)
+                size_kb = lf.stat().st_size // 1024
+                log_files[day] = {
+                    "log_file": lf.name,
+                    "log_size_kb": size_kb,
+                    "ended_at": mtime.isoformat(),
+                }
+
+        runs = []
+        for day, group in df.groupby("_day", sort=False):
+            if not day or day == "NaT":
+                continue
+
+            status_col = group.get("Status", pd.Series(dtype=str)).fillna("").str.lower()
+            applied  = int(status_col.str.contains("applied|success").sum())
+            errors   = int(status_col.str.contains("error|failed").sum())
+            skipped  = int(status_col.str.contains("skipped|dry run").sum())
+            manual   = int(status_col.str.contains("manual|pending").sum())
+
+            scores   = pd.to_numeric(group.get("Score", pd.Series(dtype=float)), errors="coerce")
+            avg_sc   = round(float(scores.mean()), 1) if not scores.isna().all() else 0.0
+
+            platforms = list(group.get("Source", pd.Series(dtype=str)).dropna().unique())
+
+            # Timestamps
+            valid_dates = group["_date"].dropna()
+            started_at = valid_dates.min().isoformat() if not valid_dates.empty else None
+            ended_at   = valid_dates.max().isoformat() if not valid_dates.empty else None
+
+            # Duration in minutes
+            if started_at and ended_at and started_at != ended_at:
+                duration_mins = int((valid_dates.max() - valid_dates.min()).total_seconds() / 60)
+            else:
+                duration_mins = None
+
+            # Override ended_at from log file mtime if available
+            log_meta = log_files.get(day, {})
+            if log_meta.get("ended_at"):
+                ended_at = log_meta["ended_at"]
+
+            # Applications list (newest first within the run)
+            apps_clean = clean_dataframe_for_json(
+                group.sort_values("_date", ascending=False)
+            ).drop(columns=["_date", "_day"], errors="ignore").to_dict(orient="records")
+
+            runs.append({
+                "date": day,
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "duration_mins": duration_mins,
+                "stats": {
+                    "total":   len(group),
+                    "applied": applied,
+                    "skipped": skipped,
+                    "errors":  errors,
+                    "manual":  manual,
+                    "avg_score": avg_sc,
+                },
+                "platforms": platforms,
+                "log_file": log_meta.get("log_file"),
+                "log_size_kb": log_meta.get("log_size_kb"),
+                "applications": apps_clean,
+            })
+
+        # Sort by date descending
+        runs.sort(key=lambda r: r["date"], reverse=True)
+        return {"runs": runs, "total_runs": len(runs)}
+
+    except Exception as e:
+        logger.error(f"[API] /api/runs error: {e}", exc_info=True)
+        return {"runs": [], "error": str(e)}
+
+@app.get("/api/history")
+def get_history(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    platform: Optional[str] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    df = load_csv()
+    if df.empty:
+        return {"items": [], "total": 0, "page": page, "per_page": per_page}
+
+    try:
+        if platform:
+            platform_col = "Platform" if "Platform" in df.columns else "Source" if "Source" in df.columns else None
+            if platform_col:
+                df = df[df[platform_col].astype(str).str.lower() == platform.lower()]
+
+        if status and "Status" in df.columns:
+            df = df[df["Status"].astype(str).str.lower() == status.lower()]
+
+        if date_from and "Date" in df.columns:
+            df = df[df["Date"] >= date_from]
+
+        if date_to and "Date" in df.columns:
+            df = df[df["Date"] <= date_to]
+
+        total = len(df)
+        df = df.iloc[::-1]
+        start = (page - 1) * per_page
+        end = start + per_page
+        items = clean_dataframe_for_json(df.iloc[start:end]).to_dict(orient="records")
+
+        return {
+            "items": items,
+            "total": int(total),
+            "page": int(page),
+            "per_page": int(per_page),
+            "total_pages": int((total + per_page - 1) // per_page),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/logs")
+def get_logs(lines: int = Query(100, ge=10, le=2000)):
+    latest_log = get_latest_log_file()
+    if not latest_log:
+        return {"logs": ["No logs found."], "file": None}
+
+    try:
+        with open(latest_log, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()[-lines:]
+            return {"logs": [line.rstrip("\n") for line in all_lines], "file": str(latest_log.name)}
+    except Exception as e:
+        return {"logs": [f"Error reading logs: {e}"], "file": None}
 
 @app.get("/api/logs/stream")
 async def stream_logs():
-    """
-    Server-Sent Events endpoint — streams new log lines in real time.
-    The frontend connects with EventSource('/api/logs/stream') and receives
-    'data: <line>\\n\\n' events as the bot writes to its log file.
-    """
     async def event_generator():
-        # Wait up to 5s for a log file to appear (bot may have just started)
         for _ in range(10):
             log_file = get_latest_log_file()
             if log_file:
@@ -242,18 +581,14 @@ async def stream_logs():
 
         try:
             with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                # Send last 50 lines as history first
                 history = f.readlines()[-50:]
                 for line in history:
                     yield f"data: {line.rstrip()}\n\n"
-
-                # Then tail new lines
                 while True:
                     line = f.readline()
                     if line:
                         yield f"data: {line.rstrip()}\n\n"
                     else:
-                        # Heartbeat every 1s to keep connection alive
                         await asyncio.sleep(1)
                         yield ": heartbeat\n\n"
         except Exception as e:
@@ -262,111 +597,12 @@ async def stream_logs():
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",   # disable nginx buffering if proxied
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
-
-# ──────────────────────────────────────────────────────────────
-# /api/status — bot running check
-# ──────────────────────────────────────────────────────────────
-
-@app.get("/api/status")
-def get_status():
-    """Check if the bot process is currently running."""
-    global _bot_process, _bot_started_at
-    is_running = _bot_process is not None and _bot_process.poll() is None
-    if not is_running:
-        _bot_started_at = None  # clear start time when bot exits
-    return {
-        "is_running": is_running,
-        "started_at": _bot_started_at,
-        "schedule_enabled": False,
-        "next_run": None,
-    }
-
-
-# ──────────────────────────────────────────────────────────────
-# /api/run-bot  — trigger bot (frontend/App.tsx)
-# /api/start    — trigger bot (dashboard/frontend)
-# ──────────────────────────────────────────────────────────────
-
-class RunBotRequest(BaseModel):
-    dry_run: bool = False
-    headless: bool = True   # False = Chrome opens visibly on screen
-
-
-@app.post("/api/run-bot")
-def run_bot(req: RunBotRequest = RunBotRequest()):
-    """Trigger the bot to run in the background."""
-    global _bot_process
-
-    # Prevent double-start
-    if _bot_process is not None and _bot_process.poll() is None:
-        return {"status": "already_running", "message": "Bot is already running"}
-
-    cmd = ["python", "main.py", "--run-now"]
-    if req.dry_run:
-        cmd.append("--dry-run")
-
-    try:
-        _bot_process = _spawn_bot(cmd, headless=req.headless)
-        return {
-            "status": "success",
-            "message": "Bot started in background",
-            "pid": _bot_process.pid,
-            "headless": req.headless,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/start")
-def start_bot():
-    """Alias for /api/run-bot — for dashboard/frontend compatibility. Always shows browser."""
-    global _bot_process, _bot_started_at
-
-    if _bot_process is not None and _bot_process.poll() is None:
-        # Bug 2 fix: include `already_running` field so the frontend alert fires
-        return {"already_running": True, "message": "Bot is already running."}
-
-    _bot_process = _spawn_bot(["python", "main.py", "--run-now"], headless=False)
-    _bot_started_at = datetime.utcnow().isoformat() + "Z"
-    return {"already_running": False, "message": "Bot started in the background.", "pid": _bot_process.pid}
-
-
-# ──────────────────────────────────────────────────────────────
-# /api/stop — stop the running bot process
-# ──────────────────────────────────────────────────────────────
-
-@app.post("/api/stop")
-def stop_bot():
-    """Terminate the running bot process."""
-    global _bot_process, _bot_started_at
-    if _bot_process is not None and _bot_process.poll() is None:
-        _bot_process.terminate()
-        _bot_started_at = None
-        return {"message": "Bot stopped."}
-    return {"message": "Bot was not running."}
-
-
-# ──────────────────────────────────────────────────────────────
-# /api/session/live — live session state (Bug 5 fix)
-# /api/session/update — called by the bot to push updates
-# ──────────────────────────────────────────────────────────────
-
 @app.get("/api/session/live")
-def get_live_session():
-    """Return current live session state (polled by frontend every 2 s)."""
-    global _bot_process
-    is_running = _bot_process is not None and _bot_process.poll() is None
-    session = dict(_live_session)
-    if not is_running and session["status"] == "running":
-        session["status"] = "idle"
-    return session
-
+def get_session_live():
+    return session_state
 
 class SessionUpdate(BaseModel):
     status: str = "running"
@@ -376,99 +612,93 @@ class SessionUpdate(BaseModel):
     applied_count: int = 0
     skipped_count: int = 0
     error_count: int = 0
-    event: Optional[dict] = None  # single event to append
-
+    event: Optional[dict] = None
 
 @app.post("/api/session/update")
 async def update_live_session(update: SessionUpdate):
-    """Bot calls this to push live session progress to the dashboard."""
-    global _live_session
-    _live_session["status"] = update.status
-    _live_session["current_platform"] = update.current_platform
-    _live_session["current_listing"] = update.current_listing
-    _live_session["current_step"] = update.current_step
-    _live_session["applied_count"] = update.applied_count
-    _live_session["skipped_count"] = update.skipped_count
-    _live_session["error_count"] = update.error_count
+    session_state["status"] = update.status
+    session_state["current_platform"] = update.current_platform
+    session_state["current_listing"] = update.current_listing
+    session_state["current_step"] = update.current_step
+    session_state["applied_count"] = update.applied_count
+    session_state["skipped_count"] = update.skipped_count
+    session_state["error_count"] = update.error_count
 
     if update.event:
         event = dict(update.event)
         if "timestamp" not in event:
             event["timestamp"] = datetime.utcnow().isoformat() + "Z"
-        _live_session["events"] = (_live_session["events"] + [event])[-100:]
+        session_state["events"].append(event)
+        if len(session_state["events"]) > 100:
+            session_state["events"] = session_state["events"][-100:]
 
-    # Broadcast to all connected WebSocket clients
-    if _ws_clients:
-        payload = json.dumps({"type": "session_state", "data": _live_session})
+    if ws_clients:
+        payload = json.dumps({"type": "session_state", "data": session_state})
         dead = []
-        for ws in _ws_clients:
+        for ws in ws_clients:
             try:
                 await ws.send_text(payload)
             except Exception:
                 dead.append(ws)
         for ws in dead:
-            _ws_clients.remove(ws)
-
+            if ws in ws_clients:
+                ws_clients.remove(ws)
     return {"ok": True}
-
-
-# ──────────────────────────────────────────────────────────────
-# /ws/live — WebSocket for real-time events (Bug 5 fix)
-# ──────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/live")
 async def websocket_live(websocket: WebSocket):
-    """WebSocket endpoint — sends session_state on connect, then on every update."""
     await websocket.accept()
-    _ws_clients.append(websocket)
+    ws_clients.append(websocket)
     try:
-        # Send current state immediately on connect
-        await websocket.send_text(
-            json.dumps({"type": "session_state", "data": _live_session})
-        )
-        # Keep connection alive; data is pushed via update_live_session
+        await websocket.send_text(json.dumps({"type": "session_state", "data": session_state}))
         while True:
             try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                if data == "ping":
+                    await websocket.send_text("pong")
             except asyncio.TimeoutError:
-                # Send a heartbeat ping
                 await websocket.send_text(json.dumps({"type": "ping"}))
-    except WebSocketDisconnect:
-        pass
-    except Exception:
+    except (WebSocketDisconnect, Exception):
         pass
     finally:
-        if websocket in _ws_clients:
-            _ws_clients.remove(websocket)
+        if websocket in ws_clients:
+            ws_clients.remove(websocket)
 
-
-# ──────────────────────────────────────────────────────────────
-# /api/session/* — Captured session endpoints
-# ──────────────────────────────────────────────────────────────
+@app.get("/api/session/key", dependencies=[Depends(verify_api_key)])
+def get_session_key():
+    return {"key": os.getenv("SESSION_SECRET_KEY", "")}
 
 class SessionUploadRequest(BaseModel):
     platform: str
     encrypted_blob: list[int]
     iv: list[int]
 
-@app.post("/api/session/upload")
+@app.post("/api/session/upload", dependencies=[Depends(verify_api_key)])
 def upload_session(req: SessionUploadRequest):
     try:
         key = get_aesgcm_key()
         aesgcm = AESGCM(key)
-        
         ciphertext = bytes(req.encrypted_blob)
         iv = bytes(req.iv)
-        
         plaintext = aesgcm.decrypt(iv, ciphertext, None)
         session_data = json.loads(plaintext.decode('utf-8'))
         
         if "cookies" not in session_data or "capturedAt" not in session_data:
             raise ValueError("Invalid session shape")
             
+        iv_rest = os.urandom(12)
+        ciphertext_rest = aesgcm.encrypt(iv_rest, json.dumps(session_data).encode('utf-8'), None)
+        
+        at_rest_data = {
+            "capturedAt": session_data["capturedAt"],
+            "platform": req.platform,
+            "iv": list(iv_rest),
+            "encrypted_blob": list(ciphertext_rest)
+        }
+            
         file_path = SESSION_DIR / f"{req.platform}_session.json"
         with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(session_data, f, indent=2)
+            json.dump(at_rest_data, f, indent=2)
             
         return {"status": "success", "message": f"Session captured for {req.platform}"}
     except Exception as e:
@@ -478,30 +708,22 @@ def upload_session(req: SessionUploadRequest):
 def get_session_status():
     platforms = ["linkedin", "naukri", "internshala", "unstop"]
     status = {}
-    
     for plat in platforms:
         file_path = SESSION_DIR / f"{plat}_session.json"
         if file_path.exists():
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    
                 captured_dt = datetime.fromisoformat(data["capturedAt"].replace("Z", "+00:00"))
                 age = (datetime.now().astimezone() - captured_dt).days
-                
-                status[plat] = {
-                    "connected": True,
-                    "capturedAt": data["capturedAt"],
-                    "stale": age > 7
-                }
+                status[plat] = {"connected": True, "capturedAt": data["capturedAt"], "stale": age > 7}
             except Exception:
                 status[plat] = {"connected": False}
         else:
             status[plat] = {"connected": False}
-            
     return status
 
-@app.delete("/api/session/{platform}")
+@app.delete("/api/session/{platform}", dependencies=[Depends(verify_api_key)])
 def delete_session(platform: str):
     file_path = SESSION_DIR / f"{platform}_session.json"
     if file_path.exists():
@@ -512,46 +734,283 @@ def delete_session(platform: str):
             raise HTTPException(status_code=500, detail=str(e))
     return {"status": "not_found"}
 
-# ──────────────────────────────────────────────────────────────
-# /api/schedule — read/write schedule config
-# ──────────────────────────────────────────────────────────────
-
-SCHEDULE_FILE = BASE_DIR / "data" / "schedule.json"
-_DEFAULT_SCHEDULE = {"enabled": False, "days": ["mon", "tue", "wed", "thu", "fri"], "time": "09:00", "dry_run": True}
-
-
 @app.get("/api/schedule")
 def get_schedule():
-    """Return current schedule config."""
-    if SCHEDULE_FILE.exists():
-        try:
-            return json.loads(SCHEDULE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return _DEFAULT_SCHEDULE
+    config = load_schedule_config()
+    return {
+        "enabled": config["enabled"],
+        "days": config["days"],
+        "time": config["time"],
+        "dry_run": config["dry_run"],
+        "next_run": get_next_scheduled_run() if config["enabled"] else None,
+    }
 
+@app.post("/api/schedule", dependencies=[Depends(verify_api_key)])
+def update_schedule(config: dict):
+    config = validate_schedule_config(config)
+    try:
+        save_schedule_config(config)
+        schedule_jobs_from_config(config)
+        return {"message": "Schedule saved successfully", "schedule": config}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/schedule")
-def save_schedule(config: dict):
-    """Persist schedule config and return it."""
-    SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SCHEDULE_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
-    return {"schedule": config}
+@app.get("/api/status")
+def get_status():
+    global current_process, current_process_started_at
+    # Sync session_state with actual process state
+    actually_running = current_process is not None and current_process.poll() is None
+    if not actually_running and session_state["status"] == "running":
+        # Process died but session_state wasn't reset yet — fix it now
+        session_state["status"] = "idle"
+        session_state["current_platform"] = ""
+    return {
+        "is_running": actually_running,
+        "status": session_state["status"],
+        "pid": current_process.pid if current_process is not None and current_process.poll() is None else None,
+        "started_at": current_process_started_at.isoformat() if current_process_started_at else None,
+        "next_run": get_next_scheduled_run() if load_schedule_config().get("enabled", False) else None,
+        "schedule_enabled": load_schedule_config().get("enabled", False),
+    }
 
+class RunBotRequest(BaseModel):
+    dry_run: bool = False
+    headless: bool = True
 
-# ──────────────────────────────────────────────────────────────
-# /api/health  — simple health check
-# ──────────────────────────────────────────────────────────────
+@app.post("/api/run-bot", dependencies=[Depends(verify_api_key)])
+def run_bot(req: RunBotRequest = RunBotRequest()):
+    spawned = spawn_bot_process(dry_run=req.dry_run, headless=req.headless)
+    if not spawned:
+        return {"status": "already_running", "message": "Bot is already running", "already_running": True}
+    return {"status": "success", "message": "Bot started in background", "already_running": False}
+
+@app.post("/api/start", dependencies=[Depends(verify_api_key)])
+def start_bot(
+    platform: Optional[str] = None,
+    dry_run: Optional[bool] = None,
+    headless: bool = False,
+    run_now: bool = True,          # default True — dashboard always wants immediate run
+):
+    if dry_run is None:
+        dry_run = False
+    spawned = spawn_bot_process(dry_run=dry_run, headless=headless, platform=platform, run_now=run_now)
+    if not spawned:
+        return {"message": "Failed to queue bot run", "already_running": True}
+    return {"message": "Bot queued", "already_running": False}
+
+@app.post("/api/stop", dependencies=[Depends(verify_api_key)])
+def stop_bot():
+    stopped = stop_bot_process()
+    if stopped:
+        session_state["status"] = "idle"
+        session_state["current_platform"] = ""
+        session_state["events"].append({"timestamp": datetime.now().isoformat(), "type": "info", "message": "Bot stopped by user"})
+        return {"message": "Bot stopped.", "stopped": True}
+    return {"message": "No running bot to stop.", "stopped": False}
+
+@app.post("/api/session/pause", dependencies=[Depends(verify_api_key)])
+def pause_session():
+    if session_state["status"] != "running":
+        return {"message": "No active session to pause."}
+    session_state["status"] = "paused"
+    return {"message": "Session paused."}
+
+@app.post("/api/session/resume", dependencies=[Depends(verify_api_key)])
+def resume_session():
+    if session_state["status"] != "paused":
+        return {"message": "No paused session to resume."}
+    session_state["status"] = "running"
+    return {"message": "Session resumed."}
 
 @app.get("/api/health")
 def health():
     return {
         "status": "ok",
+        "version": "2.0.0",
+        "session": session_state["status"],
         "csv_exists": CSV_PATH.exists(),
         "logs_dir": str(LOGS_DIR),
+        "timestamp": datetime.now().isoformat(),
     }
 
+# ── History Endpoints ─────────────────────────────────────────────
+
+@app.get("/api/history/applications")
+def get_history():
+    from core.db import engine
+    from sqlmodel import Session, select
+    from core.models import ApplicationLog
+    try:
+        with Session(engine) as session:
+            # Get the last 100 applications, newest first
+            statement = select(ApplicationLog).order_by(ApplicationLog.id.desc()).limit(100)
+            results = session.exec(statement).all()
+            # Convert SQLModel objects to dicts
+            return [row.model_dump() for row in results]
+    except Exception as e:
+        print(f"Failed to fetch history: {e}")
+        return []
+
+# ── Profile & Settings Endpoints ─────────────────────────────────────────────
+
+PROFILE_PATH = BASE_DIR / "data" / "profile.json"
+ENV_PATH = BASE_DIR / ".env"
+
+@app.get("/api/profile")
+def get_profile():
+    if PROFILE_PATH.exists():
+        try:
+            with open(PROFILE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+@app.post("/api/profile")
+async def save_profile(data: dict):
+    try:
+        PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(PROFILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return {"status": "success", "message": "Profile saved."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/settings")
+def get_settings():
+    import dotenv
+    settings = dotenv.dotenv_values(ENV_PATH)
+    return settings
+
+@app.post("/api/settings")
+def save_settings(data: dict):
+    try:
+        # Read existing
+        lines = []
+        if ENV_PATH.exists():
+            with open(ENV_PATH, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        
+        # Update or append
+        updated_keys = set()
+        new_lines = []
+        for line in lines:
+            line_str = line.strip()
+            if not line_str or line_str.startswith("#"):
+                new_lines.append(line)
+                continue
+            
+            if "=" in line_str:
+                key = line_str.split("=", 1)[0]
+                if key in data:
+                    new_lines.append(f"{key}={data[key]}\n")
+                    updated_keys.add(key)
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+                
+        # Append new keys
+        for k, v in data.items():
+            if k not in updated_keys:
+                new_lines.append(f"{k}={v}\n")
+                
+        with open(ENV_PATH, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+            
+        return {"status": "success", "message": "Settings saved."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── Interview Prep Endpoints ──────────────────────────────────────────────────
+
+PREP_DIR = BASE_DIR / "logs" / "prep"
+
+@app.get("/api/prep")
+def list_prep_guides():
+    PREP_DIR.mkdir(parents=True, exist_ok=True)
+    files = []
+    for f in sorted(PREP_DIR.glob("*.txt"), key=lambda x: x.stat().st_mtime, reverse=True):
+        stat = f.stat()
+        files.append({
+            "filename": f.name,
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        })
+    return files
+
+@app.get("/api/prep/{filename}")
+def get_prep_guide(filename: str):
+    PREP_DIR.mkdir(parents=True, exist_ok=True)
+    # Security: only allow .txt files with no path traversal
+    if ".." in filename or "/" in filename or not filename.endswith(".txt"):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    path = PREP_DIR / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return {"filename": filename, "content": path.read_text(encoding="utf-8")}
+
+class GeneratePrepRequest(BaseModel):
+    job_description: str
+    role: str
+
+@app.post("/api/prep/generate")
+def generate_prep(req: GeneratePrepRequest):
+    try:
+        from agent.ai_client import get_ai_response
+        system_prompt = "You are an expert interview coach. Given the role and job description, generate a concise, actionable interview prep guide. Focus on likely technical questions, behavioral themes, and key company context. Format with clear Markdown headings."
+        user_prompt = f"Role: {req.role}\n\nJob Description:\n{req.job_description}"
+        response = get_ai_response(system_prompt, user_prompt, max_tokens=1500)
+        
+        # Save it
+        filename = f"{re.sub(r'[^a-zA-Z0-9]', '_', req.role).lower()}_{int(time.time())}.txt"
+        path = PREP_DIR / filename
+        PREP_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(response, encoding="utf-8")
+        
+        return {"status": "success", "filename": filename, "content": response}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Platforms Endpoints ───────────────────────────────────────────────────────
+
+PLATFORMS_PATH = BASE_DIR / "data" / "platforms.json"
+DEFAULT_PLATFORMS = {
+    "internshala": {"enabled": True, "max_applies": 10},
+    "linkedin": {"enabled": True, "max_applies": 15},
+    "indeed": {"enabled": True, "max_applies": 10},
+    "unstop": {"enabled": True, "max_applies": 5},
+    "naukri": {"enabled": True, "max_applies": 10},
+    "cold_email": {"enabled": False, "max_applies": 5},
+}
+
+@app.get("/api/platforms")
+def get_platforms():
+    if PLATFORMS_PATH.exists():
+        try:
+            with open(PLATFORMS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # Merge with defaults for any missing platforms
+            for k, v in DEFAULT_PLATFORMS.items():
+                if k not in data:
+                    data[k] = v
+            return data
+        except Exception:
+            pass
+    return DEFAULT_PLATFORMS
+
+@app.post("/api/platforms")
+def save_platforms(data: dict):
+    try:
+        PLATFORMS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(PLATFORMS_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("dashboard:app", host="0.0.0.0", port=8000, reload=True)
+

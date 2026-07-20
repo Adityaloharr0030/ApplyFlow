@@ -273,7 +273,7 @@ def _call_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens:
 
         if response_format == "json":
             config_kwargs["response_mime_type"] = "application/json"
-            config_kwargs["response_json_schema"] = {"type": "object"}
+            # NOTE: response_json_schema is not a valid field in google-genai SDK — omitted
 
         config = types.GenerateContentConfig(**config_kwargs)
 
@@ -287,6 +287,7 @@ def _call_gemini(api_key: str, system_prompt: str, user_prompt: str, max_tokens:
 
         text = _extract_gemini_text(response)
         if not text:
+            logger.debug(f"[AI] Gemini raw response: {str(response)[:300]}")
             raise Exception("Gemini returned empty response")
         return text
 

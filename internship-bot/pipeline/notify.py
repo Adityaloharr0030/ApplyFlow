@@ -41,11 +41,52 @@ def run_notify(
         except Exception as exc:
             logger.warning("[Notify] %s summary failed: %s", label, exc)
 
-    # Send CSV log as attachment via Telegram
+    # Send a CSV log containing ONLY this run's data
+    import csv
+    from pathlib import Path
+    from datetime import datetime
+    
     try:
-        telegram_document("logs/applications.csv")
+        latest_csv = Path("logs/latest_run.csv")
+        latest_csv.parent.mkdir(parents=True, exist_ok=True)
+        
+        headers = ["Date", "Company", "Role", "Location", "Source", "Status", "Score", "Apply URL", "Cover Note Preview"]
+        
+        with open(latest_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            for listing in applied:
+                writer.writerow([
+                    now_str,
+                    listing.get("company", "Unknown"),
+                    listing.get("title", "N/A"),
+                    listing.get("location", "N/A"),
+                    listing.get("source", "N/A"),
+                    "Applied ✓",
+                    str(listing.get("score", "N/A")),
+                    listing.get("apply_url", "N/A"),
+                    "See dashboard/sheets for full cover note"
+                ])
+                
+            for listing in manual:
+                writer.writerow([
+                    now_str,
+                    listing.get("company", "Unknown"),
+                    listing.get("title", "N/A"),
+                    listing.get("location", "N/A"),
+                    listing.get("source", "N/A"),
+                    "Pending (Manual)",
+                    str(listing.get("score", "N/A")),
+                    listing.get("apply_url", "N/A"),
+                    "N/A"
+                ])
+                
+        if len(applied) > 0 or len(manual) > 0:
+            telegram_document(str(latest_csv))
     except Exception as exc:
-        logger.debug("[Notify] Telegram CSV attachment failed: %s", exc)
+        logger.debug("[Notify] Telegram fresh CSV attachment failed: %s", exc)
 
 
 def fire_instant(platform: str, listing: dict, is_error: bool = False, error_msg: str = "") -> None:

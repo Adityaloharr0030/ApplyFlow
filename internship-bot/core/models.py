@@ -12,19 +12,32 @@ This replaces loose dict passing and provides:
 
 from __future__ import annotations
 
-from typing import List, Optional
-from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import List, Optional, Any
+from pydantic import BaseModel, Field as PydanticField, field_validator, model_validator
+import pydantic
+from sqlmodel import SQLModel, Field, JSON
+import sqlalchemy as sa
+from sqlalchemy.types import JSON as sa_JSON
 
 
-# ── Candidate Profile ──────────────────────────────────────────────────────────
+class User(SQLModel, table=True):
+    __tablename__ = "users"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(unique=True, index=True)
+    hashed_password: str
+    stripe_customer_id: Optional[str] = None
+    tier: str = Field(default="free") # free or pro
+    created_at: str = Field(default_factory=lambda: __import__("datetime").datetime.now().isoformat())
 
-class CandidateProfile(BaseModel):
+class UserProfile(SQLModel, table=True):
     """
-    Strict schema for data/profile.json.
-    Loaded once at startup; passed (read-only) through the pipeline.
+    Strict database schema for user profiles, replacing data/profile.json.
     """
+    __tablename__ = "user_profiles"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
+    
     name: str = "Unknown Candidate"
-    email: str = ""
     phone: str = ""
     location: str = ""
     degree: str = ""
@@ -40,12 +53,12 @@ class CandidateProfile(BaseModel):
     github: str = ""
 
     # Job preferences
-    keywords: List[str] = Field(default_factory=list)
-    skills: List[str] = Field(default_factory=list)
-    projects: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list, sa_column=sa.Column(sa_JSON))
+    skills: List[str] = Field(default_factory=list, sa_column=sa.Column(sa_JSON))
+    projects: List[str] = Field(default_factory=list, sa_column=sa.Column(sa_JSON))
     achievement: str = ""
-    location_preferences: List[str] = Field(default_factory=lambda: ["work from home", "remote"])
-    exclude_keywords: List[str] = Field(default_factory=list)
+    location_preferences: List[str] = Field(default_factory=lambda: ["work from home", "remote"], sa_column=sa.Column(sa_JSON))
+    exclude_keywords: List[str] = Field(default_factory=list, sa_column=sa.Column(sa_JSON))
 
     # Employment details
     years_of_experience: str = "0"
@@ -53,33 +66,15 @@ class CandidateProfile(BaseModel):
     current_ctc: str = "0"
     expected_ctc: str = "As per industry standards"
     willing_to_relocate: str = "Yes"
-    preferred_mode: List[str] = Field(default_factory=lambda: ["remote"])
+    preferred_mode: List[str] = Field(default_factory=lambda: ["remote"], sa_column=sa.Column(sa_JSON))
     open_to_hybrid: str = "Yes"
     work_authorization: str = "Indian Citizen"
 
-    # Platform credentials (optional — loaded from .env, not profile.json)
+    # Platform credentials (optional)
     internshala_email: str = ""
     linkedin_email: str = ""
     naukri_email: str = ""
     unstop_email: str = ""
-
-    @field_validator("keywords", "skills", "projects", "location_preferences",
-                     "exclude_keywords", "preferred_mode", mode="before")
-    @classmethod
-    def ensure_list(cls, v):
-        if isinstance(v, str):
-            return [v] if v else []
-        return v or []
-
-    @field_validator("email")
-    @classmethod
-    def not_placeholder_email(cls, v):
-        if v in ("youremail@example.com", ""):
-            return v  # warn at runtime, don't crash
-        return v
-
-    class Config:
-        extra = "allow"  # forward-compatible: unknown keys in profile.json are ignored
 
 
 # ── Job Listing ────────────────────────────────────────────────────────────────
@@ -97,7 +92,7 @@ class JobListing(BaseModel):
     platform: str = ""
 
     # Scoring fields — populated by agent/filter.py
-    score: int = Field(default=0, ge=0, le=10)
+    score: int = PydanticField(default=0, ge=0, le=10)
     reason: str = ""
     apply: bool = False
 
@@ -153,11 +148,73 @@ class ApplicationResult(BaseModel):
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def profile_from_dict(data: dict) -> CandidateProfile:
-    """Parse raw profile.json dict into a validated CandidateProfile."""
-    return CandidateProfile.model_validate(data)
+def profile_from_dict(data: dict) -> UserProfile:
+    """Parse raw profile dict into a validated UserProfile."""
+    return UserProfile.model_validate(data)
 
 
 def listing_from_dict(data: dict) -> JobListing:
     """Parse a raw scraper dict into a validated JobListing."""
     return JobListing.model_validate(data)
+
+# ── Database Models ──────────────────────────────────────────────────────────
+
+class ApplicationLog(SQLModel, table=True):
+    __tablename__ = "applications"
+    __table_args__ = (
+        sa.UniqueConstraint("platform", "apply_url", name="uq_platform_url"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
+    platform: str = Field(index=True)
+    apply_url: str
+    title: str = ""
+    company: str = ""
+    location: str = ""
+    score: int = 0
+    status: str = "success"  # 'success' or 'failed'
+    message: str = ""
+    dry_run: bool = False
+    applied_at: str = Field(default_factory=lambda: __import__("datetime").datetime.now().isoformat())
+
+class BotSchedule(SQLModel, table=True):
+    __tablename__ = "schedules"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
+    platform: str = Field(index=True)
+    enabled: bool = False
+    run_interval_hours: int = 24
+    max_applies_per_run: int = 15
+    next_run: Optional[str] = None
+
+class BrowserSession(SQLModel, table=True):
+    __tablename__ = "sessions"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
+    platform: str = Field(index=True)
+    captured_at: str = ""
+    iv: List[int] = Field(sa_column=sa.Column(sa_JSON))
+    encrypted_blob: List[int] = Field(sa_column=sa.Column(sa_JSON))
+
+class RunEvent(SQLModel, table=True):
+    __tablename__ = "run_events"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
+    run_id: str = Field(index=True)
+    timestamp: str = Field(default_factory=lambda: __import__("datetime").datetime.now().isoformat())
+    severity: str = "INFO"
+    message: str
+    traceback: Optional[str] = None
+
+class JobQueue(SQLModel, table=True):
+    __tablename__ = "job_queue"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
+    platform: str = Field(index=True)
+    status: str = Field(default="pending", index=True) # pending, running, completed, failed
+    dry_run: bool = False
+    headless: bool = True
+    created_at: str = Field(default_factory=lambda: __import__("datetime").datetime.now().isoformat())
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None

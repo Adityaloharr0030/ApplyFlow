@@ -38,7 +38,7 @@ from utils.browser import create_driver
 from agent.interview_prep import generate_interview_prep
 from platforms.login import LOGIN_HANDLERS
 from agent.resume_brain import get_resume_context
-from core.models import CandidateProfile, profile_from_dict
+from core.models import UserProfile, profile_from_dict
 
 # ─── Constants ───
 PROFILE_PATH = Path("./data/profile.json")
@@ -181,7 +181,6 @@ def send_summary(applied: list, skipped: int, errors: int, manual: list = None):
         manual = []
     try:
         telegram_summary(applied, skipped, errors, manual)
-        telegram_document("logs/applications.csv")
     except Exception as e:
         logger.error(f"  ✗ Telegram notification failed: {e}")
         
