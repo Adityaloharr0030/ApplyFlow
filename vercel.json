@@ -1,5 +1,4 @@
 ﻿{
-  "outputDirectory": "internship-bot/dashboard/frontend/dist",
   "rewrites": [
     {
       "source": "/(.*)",
