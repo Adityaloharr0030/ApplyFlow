@@ -1,34 +1,30 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { createContext, useContext, useState, useCallback } from 'react';
 
-const AuthContext = createContext();
+const AuthContext = createContext(null);
 
-export const useAuth = () => useContext(AuthContext);
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) throw new Error('useAuth must be used inside AuthProvider');
+  return context;
+};
 
 export const AuthProvider = ({ children }) => {
-  const [token, setToken] = useState(localStorage.getItem('token'));
-  const [isAuthenticated, setIsAuthenticated] = useState(!!token);
-  const navigate = useNavigate();
+  const [token, setToken] = useState(() => localStorage.getItem('token'));
 
-  useEffect(() => {
-    if (token) {
-      localStorage.setItem('token', token);
-      setIsAuthenticated(true);
-    } else {
-      localStorage.removeItem('token');
-      setIsAuthenticated(false);
-    }
-  }, [token]);
+  const isAuthenticated = !!token;
 
-  const login = (newToken) => {
+  const login = useCallback((newToken) => {
+    localStorage.setItem('token', newToken);
     setToken(newToken);
-    navigate('/');
-  };
+    // Navigate to the app after login
+    window.location.href = '/app/dashboard';
+  }, []);
 
-  const logout = () => {
+  const logout = useCallback(() => {
+    localStorage.removeItem('token');
     setToken(null);
-    navigate('/login');
-  };
+    window.location.href = '/login';
+  }, []);
 
   return (
     <AuthContext.Provider value={{ token, isAuthenticated, login, logout }}>

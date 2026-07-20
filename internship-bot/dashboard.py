@@ -27,19 +27,12 @@ app = FastAPI(title="ApplyFlow Dashboard API", version="2.0.0")
 
 @app.on_event("startup")
 def startup_event():
-    from core.db import engine, init_db
-    from core.models import SystemSettings
-    from sqlmodel import Session, select
-    import os
+    from core.db import init_db
     try:
-        init_db()  # Ensure tables exist
-        with Session(engine) as session:
-            settings = session.exec(select(SystemSettings)).all()
-            for setting in settings:
-                os.environ[setting.key] = setting.value
-        print("Loaded SystemSettings into os.environ")
+        init_db()  # Create all tables in the database
+        print("Database initialized successfully.")
     except Exception as e:
-        print(f"Failed to load SystemSettings into os.environ: {e}")
+        print(f"Failed to initialize database: {e}")
 
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
