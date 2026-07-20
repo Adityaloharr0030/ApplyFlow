@@ -857,22 +857,42 @@ PROFILE_PATH = BASE_DIR / "data" / "profile.json"
 ENV_PATH = BASE_DIR / ".env"
 
 @app.get("/api/profile")
-def get_profile():
-    if PROFILE_PATH.exists():
-        try:
-            with open(PROFILE_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+def get_profile(session: Session = Depends(get_session)):
+    from sqlmodel import select
+    from core.models import User, UserProfile
+    user = session.exec(select(User).order_by(User.id)).first()
+    if not user:
+        return {}
+    profile = session.exec(select(UserProfile).where(UserProfile.user_id == user.id)).first()
+    if not profile:
+        return {}
+    return profile.model_dump()
 
 @app.post("/api/profile")
-async def save_profile(data: dict):
+async def save_profile(data: dict, session: Session = Depends(get_session)):
+    from sqlmodel import select
+    from core.models import User, UserProfile
     try:
-        PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(PROFILE_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        return {"status": "success", "message": "Profile saved."}
+        user = session.exec(select(User).order_by(User.id)).first()
+        if not user:
+            user = User(email="admin@default.com", hashed_password="")
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+
+        profile = session.exec(select(UserProfile).where(UserProfile.user_id == user.id)).first()
+        if profile:
+            for key, value in data.items():
+                if hasattr(profile, key):
+                    setattr(profile, key, value)
+            session.add(profile)
+        else:
+            profile_data = {k: v for k, v in data.items() if hasattr(UserProfile, k)}
+            profile = UserProfile(user_id=user.id, **profile_data)
+            session.add(profile)
+            
+        session.commit()
+        return {"status": "success", "message": "Profile saved to database."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
