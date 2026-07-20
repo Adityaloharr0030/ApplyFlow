@@ -896,6 +896,70 @@ async def save_profile(data: dict, session: Session = Depends(get_session)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+from fastapi import UploadFile, File
+import io
+
+@app.post("/api/profile/parse-resume")
+async def parse_resume(file: UploadFile = File(...)):
+    import pypdf
+    from agent.ai_client import get_ai_response
+    import json
+    
+    try:
+        pdf_bytes = await file.read()
+        pdf_reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() + "\n"
+
+        prompt = f"""
+        You are an expert resume parser. Extract the following information from the resume and output ONLY a valid JSON object matching this exact schema:
+        {{
+            "name": "Full Name",
+            "email": "Email Address",
+            "phone": "Phone Number",
+            "location": "City, State, Country",
+            "degree": "Highest Degree (e.g., B.Tech, B.S.)",
+            "college": "University Name",
+            "year": "Graduation Year",
+            "cgpa": "GPA or CGPA",
+            "linkedin": "LinkedIn URL",
+            "github": "GitHub URL",
+            "skills": "Comma separated list of skills",
+            "projects": "Comma separated list of projects",
+            "years_of_experience": "Number of years",
+            "achievement": "Top achievement"
+        }}
+
+        If a field is missing in the resume, leave it as an empty string. Output ONLY JSON, nothing else. No markdown formatting.
+        
+        Resume Text:
+        {text}
+        """
+        
+        response = get_ai_response(
+            system_prompt="You are a helpful API that returns strictly valid JSON data.",
+            user_prompt=prompt,
+            max_tokens=2000,
+            response_format="json"
+        )
+        
+        if response:
+            response = response.strip()
+            if response.startswith("```json"):
+                response = response[7:]
+            if response.startswith("```"):
+                response = response[3:]
+            if response.endswith("```"):
+                response = response[:-3]
+                
+            data = json.loads(response)
+            return {"status": "success", "data": data}
+        
+        raise HTTPException(status_code=500, detail="Failed to get AI response")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse resume: {str(e)}")
+
 @app.get("/api/settings")
 def get_settings():
     import dotenv

@@ -43,6 +43,7 @@ export default function ProfilePage() {
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [parsing, setParsing] = useState(false);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/profile`)
@@ -100,7 +101,37 @@ export default function ProfilePage() {
       setTimeout(() => setSaved(false), 3000);
     } catch {
       alert('Failed to save profile.');
-      setSaving(false);
+    }
+  };
+
+  const handleResumeUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setParsing(true);
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/profile/parse-resume`, {
+        method: 'POST',
+        body: formData
+      });
+      const json = await res.json();
+      if (json.status === 'success') {
+        setProfile(prev => ({
+          ...prev,
+          ...json.data
+        }));
+        alert("Resume parsed successfully! Please review the filled fields.");
+      } else {
+        alert("Failed to parse resume: " + json.detail);
+      }
+    } catch (error) {
+      alert("Error uploading resume.");
+      console.error(error);
+    } finally {
+      setParsing(false);
     }
   };
 
@@ -122,6 +153,20 @@ export default function ProfilePage() {
             ✅ Saved!
           </div>
         )}
+      </div>
+
+      {/* Auto-Fill Resume Card */}
+      <div className="bg-blue-900/20 border border-blue-900/50 p-6 rounded-2xl mb-8 flex flex-col md:flex-row items-center justify-between gap-4">
+        <div>
+            <h3 className="text-xl font-bold text-blue-400 mb-1 flex items-center gap-2"><span>✨</span> Auto-Fill from Resume</h3>
+            <p className="text-slate-400 text-sm">Upload your PDF resume to automatically populate your profile fields using AI.</p>
+        </div>
+        <div>
+            <input type="file" accept="application/pdf" id="resume-upload" className="hidden" onChange={handleResumeUpload} />
+            <label htmlFor="resume-upload" className="cursor-pointer bg-blue-600 hover:bg-blue-500 text-white px-6 py-3 rounded-lg font-bold transition-colors flex items-center justify-center min-w-[160px]">
+                {parsing ? '⏳ Parsing AI...' : '📄 Upload PDF'}
+            </label>
+        </div>
       </div>
 
       {/* Completion Bar */}
