@@ -1,0 +1,10 @@
+﻿{
+  "buildCommand": "cd internship-bot/dashboard/frontend && npm install && npm run build",
+  "outputDirectory": "internship-bot/dashboard/frontend/dist",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
