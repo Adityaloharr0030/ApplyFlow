@@ -609,6 +609,7 @@ def get_settings(session: Session = Depends(get_session), user: User = Depends(g
 @app.post("/api/settings")
 def save_settings(data: dict, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     from core.models import UserSettings
+    from sqlmodel import select
     import os
     try:
         for k, v in data.items():
