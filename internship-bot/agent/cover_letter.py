@@ -26,7 +26,7 @@ Please write the cover letter for this candidate applying to this specific role.
     """
     
     try:
-        response = get_ai_response(system_prompt, user_prompt, max_tokens=300, model_type="writer")
+        response = get_ai_response(system_prompt, user_prompt, max_tokens=300, model_type="writer", user_id=profile.user_id if profile else None)
         if not response:
             return "I am very interested in this role and believe my skills make me a strong candidate. Please find my resume attached."
         return response.strip()

@@ -22,27 +22,32 @@ from typing import Optional
 
 from sqlmodel import Session, select
 from core.db import engine
-from core.models import SystemSettings
+from core.models import UserSettings
 
 logger = logging.getLogger(__name__)
 
 CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
 
-def _get_setting(key: str, default: str = "") -> str:
-    # First check os environment (for keys passed directly to Render)
+def _get_setting(key: str, user_id: Optional[int] = None, default: str = "") -> str:
+    # Check Database for user specific settings
+    if user_id is not None:
+        try:
+            with Session(engine) as session:
+                setting = session.exec(select(UserSettings).where(
+                    UserSettings.key == key,
+                    UserSettings.user_id == user_id
+                )).first()
+                if setting and setting.value:
+                    return setting.value
+        except Exception as e:
+            logger.error(f"Failed to read {key} from DB for user {user_id}: {e}")
+            
+    # Fallback to global os.environ (if admin set global keys via Render)
     val = os.getenv(key)
     if val:
         return val
         
-    # Then fallback to Database (for keys saved via dashboard Settings page)
-    try:
-        with Session(engine) as session:
-            setting = session.exec(select(SystemSettings).where(SystemSettings.key == key)).first()
-            if setting and setting.value:
-                return setting.value
-    except Exception as e:
-        logger.error(f"Failed to read {key} from DB: {e}")
-        
+    return default
     return default
 
 def _get_gemini_model(model_type: str) -> str:
@@ -69,7 +74,7 @@ def reset_exhausted_keys():
     _last_keys_list = []
     logger.info("[AI] Reset all API key states for new run")
 
-def _get_working_keys(model_type: str = "base") -> list[dict]:
+def _get_working_keys(model_type: str = "base", user_id: Optional[int] = None) -> list[dict]:
     """
     Returns a list of dictionaries with 'provider' and 'api_key'.
     Excludes any keys that have been marked as exhausted (429) during this run.
@@ -83,19 +88,19 @@ def _get_working_keys(model_type: str = "base") -> list[dict]:
     anthropic_keys = []
     
     # 1. Groq
-    groq_key = _get_setting("GROQ_API_KEY", "").strip()
+    groq_key = _get_setting("GROQ_API_KEY", user_id=user_id).strip()
     if groq_key and groq_key not in ("your_key_here", "") and groq_key not in _exhausted_keys:
         groq_keys.append({"provider": "groq", "api_key": groq_key})
 
     # 2. Gemini (can have multiple keys separated by comma)
-    gemini_keys_str = _get_setting("GEMINI_API_KEY", "")
+    gemini_keys_str = _get_setting("GEMINI_API_KEY", user_id=user_id)
     for k in gemini_keys_str.split(","):
         k = k.strip()
         if k and k not in ("your_api_key_here", "your_gemini_key_here", "your_second_gemini_key_here") and k not in _exhausted_keys:
             gemini_keys.append({"provider": "gemini", "api_key": k})
 
     # 3. Anthropic
-    anthropic_key = _get_setting("ANTHROPIC_API_KEY", "").strip()
+    anthropic_key = _get_setting("ANTHROPIC_API_KEY", user_id=user_id).strip()
     if anthropic_key and anthropic_key not in ("your_key_here", "") and anthropic_key not in _exhausted_keys:
         anthropic_keys.append({"provider": "anthropic", "api_key": anthropic_key})
 
@@ -108,7 +113,7 @@ def _get_working_keys(model_type: str = "base") -> list[dict]:
         return groq_keys + gemini_keys + anthropic_keys
 
 
-def get_ai_response(system_prompt: str, user_prompt: str, max_tokens: int = 1024, response_format: str = "text", model_type: str = "base") -> Optional[str]:
+def get_ai_response(system_prompt: str, user_prompt: str, max_tokens: int = 1024, response_format: str = "text", model_type: str = "base", user_id: Optional[int] = None) -> Optional[str]:
     """
     Get a response from the AI.
     Uses round-robin load balancing across all working keys.
@@ -116,7 +121,7 @@ def get_ai_response(system_prompt: str, user_prompt: str, max_tokens: int = 1024
     """
     global _key_cycle, _last_keys_list
     
-    working_keys = _get_working_keys(model_type)
+    working_keys = _get_working_keys(model_type, user_id=user_id)
     
     if not working_keys:
         logger.warning("[AI] No valid API keys found (all exhausted or none provided).")

@@ -145,7 +145,7 @@ QUESTION: "{question}"
 
 Write ONLY the answer to the question."""
 
-        answer = get_ai_response(system_prompt, user_prompt, max_tokens=512, response_format="text")
+        answer = get_ai_response(system_prompt, user_prompt, max_tokens=512, response_format="text", user_id=profile.user_id if profile else None)
 
         if answer:
             answer = answer.strip()

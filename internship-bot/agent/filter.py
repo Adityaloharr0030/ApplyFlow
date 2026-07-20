@@ -172,7 +172,7 @@ RESPOND ONLY WITH JSON:
 {{"score": <integer 1-10>, "reason": "<one specific sentence mentioning the overlap>", "apply": <true if score >= 4>}}"""
 
     try:
-        text = get_ai_response(system_prompt, user_prompt, max_tokens=200, response_format="json", model_type="scorer")
+        text = get_ai_response(system_prompt, user_prompt, max_tokens=200, response_format="json", model_type="scorer", user_id=profile.user_id if profile else None)
         if not text:
             return None
 

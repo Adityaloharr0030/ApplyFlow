@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { apiFetch as fetch } from '../utils/apiFetch';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -93,11 +94,23 @@ export default function Layout() {
         </nav>
 
         {/* Footer */}
-        <div className="px-4 py-4 border-t border-slate-800">
-          <Link to="/" className="flex items-center gap-2 text-xs text-slate-500 hover:text-slate-300 transition-colors">
-            <span>←</span> Back to site
-          </Link>
-          <div className="mt-2 text-[10px] text-slate-600">ApplyFlow v2.0 · Local Mode</div>
+        <div className="px-4 py-4 border-t border-slate-800 space-y-3">
+          <button
+            onClick={() => {
+              localStorage.removeItem('token');
+              window.location.href = '/login';
+            }}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium text-slate-400 hover:text-white hover:bg-red-500/10 hover:text-red-400 rounded-lg transition-all duration-150"
+          >
+            Logout
+          </button>
+          
+          <div>
+            <Link to="/" className="flex items-center gap-2 text-xs text-slate-500 hover:text-slate-300 transition-colors">
+              <span>←</span> Back to site
+            </Link>
+            <div className="mt-2 text-[10px] text-slate-600">ApplyFlow v2.0 • SaaS Mode</div>
+          </div>
         </div>
       </aside>
 

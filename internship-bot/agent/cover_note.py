@@ -93,7 +93,7 @@ STRICT RULES:
 OUTPUT: Plain text letter only. Nothing else."""
 
     try:
-        text = get_ai_response(system_prompt, user_prompt, max_tokens=400, response_format="text", model_type="cover")
+        text = get_ai_response(system_prompt, user_prompt, max_tokens=400, response_format="text", model_type="cover", user_id=profile.user_id if profile else None)
         if text and len(text.strip()) > 60:
             # Basic cleanup
             text = text.replace("Dear Hiring Manager", "Dear Hiring Team")

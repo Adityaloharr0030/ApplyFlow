@@ -219,11 +219,13 @@ class JobQueue(SQLModel, table=True):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
 
-class SystemSettings(SQLModel, table=True):
+class UserSettings(SQLModel, table=True):
     """
-    Stores global environment variables and API keys dynamically.
-    Replaces the ephemeral .env file.
+    Stores per-user environment variables and API keys dynamically.
+    Replaces the ephemeral .env file and global SystemSettings.
     """
-    __tablename__ = "system_settings"
-    key: str = Field(primary_key=True)
+    __tablename__ = "user_settings"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    key: str = Field(index=True)
     value: str

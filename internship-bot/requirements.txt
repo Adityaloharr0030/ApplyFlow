@@ -1,8 +1,7 @@
 # ============================================================
-# Internship Automation Bot â€” Dependencies
+# Internship Automation Bot – Dependencies
 # Compatible with Python 3.11+
 # Install: pip install -r requirements.txt
-# Last verified: June 2026
 
 # --- Web Scraping ---
 requests>=2.31.0
@@ -12,7 +11,7 @@ python-jobspy>=1.1.0
 selenium>=4.21.0
 undetected-chromedriver>=3.5.5
 # --- AI (Google Gemini & Anthropic Claude) ---
-# NOTE: google-generativeai is DEPRECATED â€” use google-genai
+# NOTE: google-generativeai is DEPRECATED – use google-genai
 google-genai>=1.0.0
 anthropic>=0.25.0
 groq>=0.4.0
@@ -22,7 +21,7 @@ google-auth>=2.29.0
 google-auth-oauthlib>=1.2.0
 # --- Telegram Notifications ---
 python-telegram-bot>=22.0
-# --- Email (smtplib is stdlib â€” no install needed) ---
+# --- Email (smtplib is stdlib – no install needed) ---
 # --- Dashboard Backend ---
 fastapi>=0.100.0
 uvicorn>=0.23.0

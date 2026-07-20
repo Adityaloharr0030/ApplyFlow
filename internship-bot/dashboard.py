@@ -365,9 +365,13 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = D
 
 
 @app.get("/api/stats")
-def get_stats():
-    df = load_csv()
-    if df.empty:
+def get_stats(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    from core.models import ApplicationLog
+    from sqlmodel import select
+    
+    logs = session.exec(select(ApplicationLog).where(ApplicationLog.user_id == user.id)).all()
+    
+    if not logs:
         return {
             "total_applied": 0,
             "today_applied": 0,
@@ -377,155 +381,66 @@ def get_stats():
             "session": session_state,
         }
 
-    try:
-        platforms = {}
-        platform_col = "Platform" if "Platform" in df.columns else "Source" if "Source" in df.columns else None
-        if platform_col:
-            platforms = {str(k): int(v) for k, v in df[platform_col].value_counts().to_dict().items()}
+    platforms = {}
+    today_applied = 0
+    import datetime
+    today = datetime.datetime.now().date()
+    
+    for log in logs:
+        # Platforms
+        platforms[log.platform] = platforms.get(log.platform, 0) + 1
+        
+        # Today
+        try:
+            log_date = datetime.datetime.fromisoformat(log.applied_at).date()
+            if log_date == today:
+                today_applied += 1
+        except:
+            pass
 
-        today_applied = 0
-        if "Date" in df.columns:
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            today_applied = len(df[df["Date"].astype(str).str.startswith(today_str, na=False)])
+    success_logs = [l for l in logs if l.status.lower() in ("success", "applied")]
+    success_rate = int((len(success_logs) / len(logs)) * 100) if logs else 0
+    
+    recent = [l.model_dump() for l in sorted(logs, key=lambda x: x.applied_at, reverse=True)[:5]]
 
-        success_rate = 0
-        if "Status" in df.columns:
-            total = len(df)
-            successes = len(df[df["Status"].astype(str).str.lower().isin(["applied", "success", "submitted"])])
-            success_rate = round((successes / total * 100) if total > 0 else 0, 1)
-
-        recent = clean_dataframe_for_json(df.tail(10)).to_dict(orient="records")[::-1]
-
-        return {
-            "total_applied": int(len(df)),
-            "today_applied": int(today_applied),
-            "platforms": platforms,
-            "success_rate": float(success_rate),
-            "recent": recent,
-            "session": session_state,
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
+    return {
+        "total_applied": len(logs),
+        "today_applied": today_applied,
+        "platforms": platforms,
+        "success_rate": success_rate,
+        "recent": recent,
+        "session": session_state,
+    }
 @app.get("/api/applications")
-def get_applications():
-    df = load_csv()
-    if df.empty:
+def get_applications(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    from core.models import ApplicationLog
+    from sqlmodel import select
+    
+    logs = session.exec(select(ApplicationLog).where(ApplicationLog.user_id == user.id).order_by(ApplicationLog.id.desc())).all()
+    
+    if not logs:
         return {"metrics": {"total": 0, "applied": 0, "failed": 0, "manual": 0, "skipped": 0, "average_score": 0.0}, "applications": []}
     
-    scores = pd.to_numeric(df.get("Score", pd.Series(dtype=float)), errors="coerce")
-    avg_score = float(scores.mean()) if not scores.isna().all() else 0.0
-
+    scores = [l.score for l in logs if l.score is not None]
+    avg_score = sum(scores) / len(scores) if scores else 0.0
+    
+    applied = len([l for l in logs if l.status.lower() in ("success", "applied")])
+    failed = len([l for l in logs if l.status.lower() in ("error", "failed")])
+    skipped = len([l for l in logs if l.dry_run])
+    
     metrics = {
-        "total": len(df),
-        "applied": int(df.get("Status", pd.Series(dtype=str)).str.contains("Applied|Success", case=False, na=False).sum()),
-        "failed": int(df.get("Status", pd.Series(dtype=str)).str.contains("Error|Failed", case=False, na=False).sum()),
-        "manual": int(df.get("Status", pd.Series(dtype=str)).str.contains("Manual|Pending", case=False, na=False).sum()),
-        "skipped": int(df.get("Status", pd.Series(dtype=str)).str.contains("Skipped|Dry Run", case=False, na=False).sum()),
+        "total": len(logs),
+        "applied": applied,
+        "failed": failed,
+        "manual": 0,
+        "skipped": skipped,
         "average_score": round(avg_score, 1),
     }
 
-    try:
-        applications = clean_dataframe_for_json(df).to_dict(orient="records")[::-1]
-    except Exception:
-        applications = []
-    
-    return {"metrics": metrics, "applications": applications}
-
-
-@app.get("/api/runs")
-def get_runs():
-    """
-    Return all bot runs grouped by log file / run date.
-    Each run contains metadata (date, stats) + the applications recorded during it.
-    """
-    df = load_csv()
-    if df.empty:
-        return {"runs": []}
-
-    try:
-        # Parse dates; group by the date part to identify each run
-        df["_date"] = pd.to_datetime(df.get("Date", pd.Series(dtype=str)), errors="coerce")
-        df["_day"] = df["_date"].dt.strftime("%Y-%m-%d")
-
-        # Match each day to its log file for metadata
-        log_files: dict[str, dict] = {}
-        for lf in sorted(LOGS_DIR.glob("run_*.log"), reverse=True):
-            stem = lf.stem  # e.g. run_2026-07-19
-            day = stem.replace("run_", "")
-            if len(day) == 10:  # YYYY-MM-DD format
-                mtime = datetime.fromtimestamp(lf.stat().st_mtime)
-                size_kb = lf.stat().st_size // 1024
-                log_files[day] = {
-                    "log_file": lf.name,
-                    "log_size_kb": size_kb,
-                    "ended_at": mtime.isoformat(),
-                }
-
-        runs = []
-        for day, group in df.groupby("_day", sort=False):
-            if not day or day == "NaT":
-                continue
-
-            status_col = group.get("Status", pd.Series(dtype=str)).fillna("").str.lower()
-            applied  = int(status_col.str.contains("applied|success").sum())
-            errors   = int(status_col.str.contains("error|failed").sum())
-            skipped  = int(status_col.str.contains("skipped|dry run").sum())
-            manual   = int(status_col.str.contains("manual|pending").sum())
-
-            scores   = pd.to_numeric(group.get("Score", pd.Series(dtype=float)), errors="coerce")
-            avg_sc   = round(float(scores.mean()), 1) if not scores.isna().all() else 0.0
-
-            platforms = list(group.get("Source", pd.Series(dtype=str)).dropna().unique())
-
-            # Timestamps
-            valid_dates = group["_date"].dropna()
-            started_at = valid_dates.min().isoformat() if not valid_dates.empty else None
-            ended_at   = valid_dates.max().isoformat() if not valid_dates.empty else None
-
-            # Duration in minutes
-            if started_at and ended_at and started_at != ended_at:
-                duration_mins = int((valid_dates.max() - valid_dates.min()).total_seconds() / 60)
-            else:
-                duration_mins = None
-
-            # Override ended_at from log file mtime if available
-            log_meta = log_files.get(day, {})
-            if log_meta.get("ended_at"):
-                ended_at = log_meta["ended_at"]
-
-            # Applications list (newest first within the run)
-            apps_clean = clean_dataframe_for_json(
-                group.sort_values("_date", ascending=False)
-            ).drop(columns=["_date", "_day"], errors="ignore").to_dict(orient="records")
-
-            runs.append({
-                "date": day,
-                "started_at": started_at,
-                "ended_at": ended_at,
-                "duration_mins": duration_mins,
-                "stats": {
-                    "total":   len(group),
-                    "applied": applied,
-                    "skipped": skipped,
-                    "errors":  errors,
-                    "manual":  manual,
-                    "avg_score": avg_sc,
-                },
-                "platforms": platforms,
-                "log_file": log_meta.get("log_file"),
-                "log_size_kb": log_meta.get("log_size_kb"),
-                "applications": apps_clean,
-            })
-
-        # Sort by date descending
-        runs.sort(key=lambda r: r["date"], reverse=True)
-        return {"runs": runs, "total_runs": len(runs)}
-
-    except Exception as e:
-        logger.error(f"[API] /api/runs error: {e}", exc_info=True)
-        return {"runs": [], "error": str(e)}
-
+    return {
+        "metrics": metrics,
+        "applications": [l.model_dump() for l in logs]
+    }
 @app.get("/api/history")
 def get_history(
     page: int = Query(1, ge=1),
@@ -534,323 +449,33 @@ def get_history(
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user)
 ):
-    df = load_csv()
-    if df.empty:
-        return {"items": [], "total": 0, "page": page, "per_page": per_page}
-
-    try:
-        if platform:
-            platform_col = "Platform" if "Platform" in df.columns else "Source" if "Source" in df.columns else None
-            if platform_col:
-                df = df[df[platform_col].astype(str).str.lower() == platform.lower()]
-
-        if status and "Status" in df.columns:
-            df = df[df["Status"].astype(str).str.lower() == status.lower()]
-
-        if date_from and "Date" in df.columns:
-            df = df[df["Date"] >= date_from]
-
-        if date_to and "Date" in df.columns:
-            df = df[df["Date"] <= date_to]
-
-        total = len(df)
-        df = df.iloc[::-1]
-        start = (page - 1) * per_page
-        end = start + per_page
-        items = clean_dataframe_for_json(df.iloc[start:end]).to_dict(orient="records")
-
-        return {
-            "items": items,
-            "total": int(total),
-            "page": int(page),
-            "per_page": int(per_page),
-            "total_pages": int((total + per_page - 1) // per_page),
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/api/logs")
-def get_logs(lines: int = Query(100, ge=10, le=2000)):
-    latest_log = get_latest_log_file()
-    if not latest_log:
-        return {"logs": ["No logs found."], "file": None}
-
-    try:
-        with open(latest_log, "r", encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()[-lines:]
-            return {"logs": [line.rstrip("\n") for line in all_lines], "file": str(latest_log.name)}
-    except Exception as e:
-        return {"logs": [f"Error reading logs: {e}"], "file": None}
-
-@app.get("/api/logs/stream")
-async def stream_logs():
-    async def event_generator():
-        for _ in range(10):
-            log_file = get_latest_log_file()
-            if log_file:
-                break
-            await asyncio.sleep(0.5)
-        else:
-            yield "data: [Waiting for bot to start...]\n\n"
-            return
-
-        try:
-            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                history = f.readlines()[-50:]
-                for line in history:
-                    yield f"data: {line.rstrip()}\n\n"
-                while True:
-                    line = f.readline()
-                    if line:
-                        yield f"data: {line.rstrip()}\n\n"
-                    else:
-                        await asyncio.sleep(1)
-                        yield ": heartbeat\n\n"
-        except Exception as e:
-            yield f"data: [Stream error: {e}]\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-@app.get("/api/session/live")
-def get_session_live():
-    return session_state
-
-class SessionUpdate(BaseModel):
-    status: str = "running"
-    current_platform: str = ""
-    current_listing: str = ""
-    current_step: str = ""
-    applied_count: int = 0
-    skipped_count: int = 0
-    error_count: int = 0
-    event: Optional[dict] = None
-
-@app.post("/api/session/update")
-async def update_live_session(update: SessionUpdate):
-    session_state["status"] = update.status
-    session_state["current_platform"] = update.current_platform
-    session_state["current_listing"] = update.current_listing
-    session_state["current_step"] = update.current_step
-    session_state["applied_count"] = update.applied_count
-    session_state["skipped_count"] = update.skipped_count
-    session_state["error_count"] = update.error_count
-
-    if update.event:
-        event = dict(update.event)
-        if "timestamp" not in event:
-            event["timestamp"] = datetime.utcnow().isoformat() + "Z"
-        session_state["events"].append(event)
-        if len(session_state["events"]) > 100:
-            session_state["events"] = session_state["events"][-100:]
-
-    if ws_clients:
-        payload = json.dumps({"type": "session_state", "data": session_state})
-        dead = []
-        for ws in ws_clients:
-            try:
-                await ws.send_text(payload)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            if ws in ws_clients:
-                ws_clients.remove(ws)
-    return {"ok": True}
-
-@app.websocket("/ws/live")
-async def websocket_live(websocket: WebSocket):
-    await websocket.accept()
-    ws_clients.append(websocket)
-    try:
-        await websocket.send_text(json.dumps({"type": "session_state", "data": session_state}))
-        while True:
-            try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
-                if data == "ping":
-                    await websocket.send_text("pong")
-            except asyncio.TimeoutError:
-                await websocket.send_text(json.dumps({"type": "ping"}))
-    except (WebSocketDisconnect, Exception):
-        pass
-    finally:
-        if websocket in ws_clients:
-            ws_clients.remove(websocket)
-
-@app.get("/api/session/key", dependencies=[Depends(verify_api_key)])
-def get_session_key():
-    return {"key": os.getenv("SESSION_SECRET_KEY", "")}
-
-class SessionUploadRequest(BaseModel):
-    platform: str
-    encrypted_blob: list[int]
-    iv: list[int]
-
-@app.post("/api/session/upload", dependencies=[Depends(verify_api_key)])
-def upload_session(req: SessionUploadRequest):
-    try:
-        key = get_aesgcm_key()
-        aesgcm = AESGCM(key)
-        ciphertext = bytes(req.encrypted_blob)
-        iv = bytes(req.iv)
-        plaintext = aesgcm.decrypt(iv, ciphertext, None)
-        session_data = json.loads(plaintext.decode('utf-8'))
+    from core.models import ApplicationLog
+    from sqlmodel import select
+    
+    query = select(ApplicationLog).where(ApplicationLog.user_id == user.id)
+    
+    if platform:
+        query = query.where(ApplicationLog.platform == platform)
+    if status:
+        query = query.where(ApplicationLog.status == status)
         
-        if "cookies" not in session_data or "capturedAt" not in session_data:
-            raise ValueError("Invalid session shape")
-            
-        iv_rest = os.urandom(12)
-        ciphertext_rest = aesgcm.encrypt(iv_rest, json.dumps(session_data).encode('utf-8'), None)
-        
-        at_rest_data = {
-            "capturedAt": session_data["capturedAt"],
-            "platform": req.platform,
-            "iv": list(iv_rest),
-            "encrypted_blob": list(ciphertext_rest)
-        }
-            
-        file_path = SESSION_DIR / f"{req.platform}_session.json"
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(at_rest_data, f, indent=2)
-            
-        return {"status": "success", "message": f"Session captured for {req.platform}"}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to decrypt/save session: {e}")
+    query = query.order_by(ApplicationLog.id.desc())
+    logs = session.exec(query).all()
+    
+    total = len(logs)
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    paginated_logs = logs[start_idx:end_idx]
 
-@app.get("/api/session/status")
-def get_session_status():
-    platforms = ["linkedin", "naukri", "internshala", "unstop"]
-    status = {}
-    for plat in platforms:
-        file_path = SESSION_DIR / f"{plat}_session.json"
-        if file_path.exists():
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                captured_dt = datetime.fromisoformat(data["capturedAt"].replace("Z", "+00:00"))
-                age = (datetime.now().astimezone() - captured_dt).days
-                status[plat] = {"connected": True, "capturedAt": data["capturedAt"], "stale": age > 7}
-            except Exception:
-                status[plat] = {"connected": False}
-        else:
-            status[plat] = {"connected": False}
-    return status
-
-@app.delete("/api/session/{platform}", dependencies=[Depends(verify_api_key)])
-def delete_session(platform: str):
-    file_path = SESSION_DIR / f"{platform}_session.json"
-    if file_path.exists():
-        try:
-            file_path.unlink()
-            return {"status": "success"}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-    return {"status": "not_found"}
-
-@app.get("/api/schedule")
-def get_schedule():
-    config = load_schedule_config()
     return {
-        "enabled": config["enabled"],
-        "days": config["days"],
-        "time": config["time"],
-        "dry_run": config["dry_run"],
-        "next_run": get_next_scheduled_run() if config["enabled"] else None,
+        "items": [l.model_dump() for l in paginated_logs],
+        "total": total,
+        "page": page,
+        "per_page": per_page
     }
-
-@app.post("/api/schedule", dependencies=[Depends(verify_api_key)])
-def update_schedule(config: dict):
-    config = validate_schedule_config(config)
-    try:
-        save_schedule_config(config)
-        schedule_jobs_from_config(config)
-        return {"message": "Schedule saved successfully", "schedule": config}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/status")
-def get_status():
-    global current_process, current_process_started_at
-    # Sync session_state with actual process state
-    actually_running = current_process is not None and current_process.poll() is None
-    if not actually_running and session_state["status"] == "running":
-        # Process died but session_state wasn't reset yet — fix it now
-        session_state["status"] = "idle"
-        session_state["current_platform"] = ""
-    return {
-        "is_running": actually_running,
-        "status": session_state["status"],
-        "pid": current_process.pid if current_process is not None and current_process.poll() is None else None,
-        "started_at": current_process_started_at.isoformat() if current_process_started_at else None,
-        "next_run": get_next_scheduled_run() if load_schedule_config().get("enabled", False) else None,
-        "schedule_enabled": load_schedule_config().get("enabled", False),
-    }
-
-class RunBotRequest(BaseModel):
-    dry_run: bool = False
-    headless: bool = True
-
-@app.post("/api/run-bot", dependencies=[Depends(verify_api_key)])
-def run_bot(req: RunBotRequest = RunBotRequest()):
-    spawned = spawn_bot_process(dry_run=req.dry_run, headless=req.headless)
-    if not spawned:
-        return {"status": "already_running", "message": "Bot is already running", "already_running": True}
-    return {"status": "success", "message": "Bot started in background", "already_running": False}
-
-@app.post("/api/start", dependencies=[Depends(verify_api_key)])
-def start_bot(
-    platform: Optional[str] = None,
-    dry_run: Optional[bool] = None,
-    headless: bool = False,
-    run_now: bool = True,          # default True — dashboard always wants immediate run
-):
-    if dry_run is None:
-        dry_run = False
-    spawned = spawn_bot_process(dry_run=dry_run, headless=headless, platform=platform, run_now=run_now)
-    if not spawned:
-        return {"message": "Failed to queue bot run", "already_running": True}
-    return {"message": "Bot queued", "already_running": False}
-
-@app.post("/api/stop", dependencies=[Depends(verify_api_key)])
-def stop_bot():
-    stopped = stop_bot_process()
-    if stopped:
-        session_state["status"] = "idle"
-        session_state["current_platform"] = ""
-        session_state["events"].append({"timestamp": datetime.now().isoformat(), "type": "info", "message": "Bot stopped by user"})
-        return {"message": "Bot stopped.", "stopped": True}
-    return {"message": "No running bot to stop.", "stopped": False}
-
-@app.post("/api/session/pause", dependencies=[Depends(verify_api_key)])
-def pause_session():
-    if session_state["status"] != "running":
-        return {"message": "No active session to pause."}
-    session_state["status"] = "paused"
-    return {"message": "Session paused."}
-
-@app.post("/api/session/resume", dependencies=[Depends(verify_api_key)])
-def resume_session():
-    if session_state["status"] != "paused":
-        return {"message": "No paused session to resume."}
-    session_state["status"] = "running"
-    return {"message": "Session resumed."}
-
-@app.get("/api/health")
-def health():
-    return {
-        "status": "ok",
-        "version": "2.0.0",
-        "session": session_state["status"],
-        "csv_exists": CSV_PATH.exists(),
-        "logs_dir": str(LOGS_DIR),
-        "timestamp": datetime.now().isoformat(),
-    }
-
-# ── History Endpoints ─────────────────────────────────────────────
-
 @app.get("/api/history/applications")
 def get_history():
     from core.db import engine
@@ -873,29 +498,19 @@ PROFILE_PATH = BASE_DIR / "data" / "profile.json"
 ENV_PATH = BASE_DIR / ".env"
 
 @app.get("/api/profile")
-def get_profile(session: Session = Depends(get_session)):
+def get_profile(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     from sqlmodel import select
-    from core.models import User, UserProfile
-    user = session.exec(select(User).order_by(User.id)).first()
-    if not user:
-        return {}
+    from core.models import UserProfile
     profile = session.exec(select(UserProfile).where(UserProfile.user_id == user.id)).first()
     if not profile:
         return {}
     return profile.model_dump()
 
 @app.post("/api/profile")
-async def save_profile(data: dict, session: Session = Depends(get_session)):
+async def save_profile(data: dict, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
     from sqlmodel import select
-    from core.models import User, UserProfile
+    from core.models import UserProfile
     try:
-        user = session.exec(select(User).order_by(User.id)).first()
-        if not user:
-            user = User(email="admin@default.com", hashed_password="")
-            session.add(user)
-            session.commit()
-            session.refresh(user)
-
         profile = session.exec(select(UserProfile).where(UserProfile.user_id == user.id)).first()
         if profile:
             for key, value in data.items():
@@ -916,7 +531,7 @@ from fastapi import UploadFile, File
 import io
 
 @app.post("/api/profile/parse-resume")
-async def parse_resume(file: UploadFile = File(...)):
+async def parse_resume(file: UploadFile = File(...), user: User = Depends(get_current_user)):
     import pypdf
     from agent.ai_client import get_ai_response
     import json
@@ -956,8 +571,9 @@ async def parse_resume(file: UploadFile = File(...)):
         response = get_ai_response(
             system_prompt="You are a helpful API that returns strictly valid JSON data.",
             user_prompt=prompt,
-            max_tokens=2000,
-            response_format="json"
+            max_tokens=1000,
+            response_format="json",
+            user_id=user.id
         )
         
         if response:
@@ -977,13 +593,13 @@ async def parse_resume(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Failed to parse resume: {str(e)}")
 
 @app.get("/api/settings")
-def get_settings(session: Session = Depends(get_session)):
-    from core.models import SystemSettings
-    # Load all keys from DB
-    db_settings = session.exec(select(SystemSettings)).all()
+def get_settings(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    from core.models import UserSettings
+    # Load user specific keys from DB
+    db_settings = session.exec(select(UserSettings).where(UserSettings.user_id == user.id)).all()
     settings_dict = {s.key: s.value for s in db_settings}
     
-    # Also include os.environ for keys that are set in Render (so UI shows them)
+    # Also include os.environ for keys that are set globally in Render (so UI shows them)
     for k, v in os.environ.items():
         if k in ["GROQ_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "WHATSAPP_PHONE", "WHATSAPP_API_KEY", "DATABASE_URL"]:
             if k not in settings_dict:
@@ -992,21 +608,20 @@ def get_settings(session: Session = Depends(get_session)):
     return settings_dict
 
 @app.post("/api/settings")
-def save_settings(data: dict, session: Session = Depends(get_session)):
-    from core.models import SystemSettings
+def save_settings(data: dict, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    from core.models import UserSettings
     import os
     try:
         for k, v in data.items():
-            setting = session.exec(select(SystemSettings).where(SystemSettings.key == k)).first()
+            setting = session.exec(select(UserSettings).where(UserSettings.key == k, UserSettings.user_id == user.id)).first()
             if setting:
                 setting.value = str(v)
                 session.add(setting)
             else:
-                setting = SystemSettings(key=k, value=str(v))
+                setting = UserSettings(user_id=user.id, key=k, value=str(v))
                 session.add(setting)
             
-            # Immediately update process environment so os.getenv sees it
-            os.environ[k] = str(v)
+            # NOTE: We DO NOT update os.environ anymore because API keys are now user-specific!
         
         session.commit()
         return {"status": "success", "message": "Settings saved to database."}

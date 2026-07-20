@@ -46,7 +46,7 @@ Format the output clearly using Markdown. Be extremely concise and actionable.
 """
 
     try:
-        prep_content = get_ai_response(system_prompt, user_prompt, max_tokens=1500, response_format="text")
+        prep_content = get_ai_response(system_prompt, user_prompt, max_tokens=1500, response_format="text", user_id=profile.user_id if profile else None)
         
         if not prep_content:
             logger.warning("[InterviewPrep] AI failed to generate prep content.")
