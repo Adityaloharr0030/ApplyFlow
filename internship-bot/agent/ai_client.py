@@ -20,16 +20,37 @@ import logging
 import time
 from typing import Optional
 
+from sqlmodel import Session, select
+from core.db import engine
+from core.models import SystemSettings
+
 logger = logging.getLogger(__name__)
 
 CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
 
+def _get_setting(key: str, default: str = "") -> str:
+    # First check os environment (for keys passed directly to Render)
+    val = os.getenv(key)
+    if val:
+        return val
+        
+    # Then fallback to Database (for keys saved via dashboard Settings page)
+    try:
+        with Session(engine) as session:
+            setting = session.exec(select(SystemSettings).where(SystemSettings.key == key)).first()
+            if setting and setting.value:
+                return setting.value
+    except Exception as e:
+        logger.error(f"Failed to read {key} from DB: {e}")
+        
+    return default
+
 def _get_gemini_model(model_type: str) -> str:
     if model_type == "scorer":
-        return os.getenv("TUNED_SCORER_MODEL", os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+        return _get_setting("TUNED_SCORER_MODEL", _get_setting("GEMINI_MODEL", "gemini-1.5-flash"))
     elif model_type == "cover":
-        return os.getenv("TUNED_COVER_MODEL", os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
-    return os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        return _get_setting("TUNED_COVER_MODEL", _get_setting("GEMINI_MODEL", "gemini-1.5-flash"))
+    return _get_setting("GEMINI_MODEL", "gemini-1.5-flash")
 
 class AILimitReached(Exception):
     """Raised when an API rate limit or quota is hit."""
@@ -62,19 +83,19 @@ def _get_working_keys(model_type: str = "base") -> list[dict]:
     anthropic_keys = []
     
     # 1. Groq
-    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    groq_key = _get_setting("GROQ_API_KEY", "").strip()
     if groq_key and groq_key not in ("your_key_here", "") and groq_key not in _exhausted_keys:
         groq_keys.append({"provider": "groq", "api_key": groq_key})
 
     # 2. Gemini (can have multiple keys separated by comma)
-    gemini_keys_str = os.getenv("GEMINI_API_KEY", "")
+    gemini_keys_str = _get_setting("GEMINI_API_KEY", "")
     for k in gemini_keys_str.split(","):
         k = k.strip()
         if k and k not in ("your_api_key_here", "your_gemini_key_here", "your_second_gemini_key_here") and k not in _exhausted_keys:
             gemini_keys.append({"provider": "gemini", "api_key": k})
 
     # 3. Anthropic
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    anthropic_key = _get_setting("ANTHROPIC_API_KEY", "").strip()
     if anthropic_key and anthropic_key not in ("your_key_here", "") and anthropic_key not in _exhausted_keys:
         anthropic_keys.append({"provider": "anthropic", "api_key": anthropic_key})
 
@@ -161,7 +182,7 @@ def _call_groq(api_key: str, system_prompt: str, user_prompt: str, max_tokens: i
     try:
         from groq import Groq
 
-        model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        model = _get_setting("GROQ_MODEL", "llama-3.3-70b-versatile")
         logger.debug(f"[AI] Calling Groq ({model}) using key {masked_key}")
 
         client = Groq(api_key=api_key)

@@ -218,3 +218,12 @@ class JobQueue(SQLModel, table=True):
     created_at: str = Field(default_factory=lambda: __import__("datetime").datetime.now().isoformat())
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+
+class SystemSettings(SQLModel, table=True):
+    """
+    Stores global environment variables and API keys dynamically.
+    Replaces the ephemeral .env file.
+    """
+    __tablename__ = "system_settings"
+    key: str = Field(primary_key=True)
+    value: str

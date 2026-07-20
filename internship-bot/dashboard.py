@@ -25,6 +25,22 @@ from apscheduler.triggers.cron import CronTrigger
 
 app = FastAPI(title="ApplyFlow Dashboard API", version="2.0.0")
 
+@app.on_event("startup")
+def startup_event():
+    from core.db import engine, init_db
+    from core.models import SystemSettings
+    from sqlmodel import Session, select
+    import os
+    try:
+        init_db()  # Ensure tables exist
+        with Session(engine) as session:
+            settings = session.exec(select(SystemSettings)).all()
+            for setting in settings:
+                os.environ[setting.key] = setting.value
+        print("Loaded SystemSettings into os.environ")
+    except Exception as e:
+        print(f"Failed to load SystemSettings into os.environ: {e}")
+
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
@@ -961,48 +977,39 @@ async def parse_resume(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Failed to parse resume: {str(e)}")
 
 @app.get("/api/settings")
-def get_settings():
-    import dotenv
-    settings = dotenv.dotenv_values(ENV_PATH)
-    return settings
+def get_settings(session: Session = Depends(get_session)):
+    from core.models import SystemSettings
+    # Load all keys from DB
+    db_settings = session.exec(select(SystemSettings)).all()
+    settings_dict = {s.key: s.value for s in db_settings}
+    
+    # Also include os.environ for keys that are set in Render (so UI shows them)
+    for k, v in os.environ.items():
+        if k in ["GROQ_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "WHATSAPP_PHONE", "WHATSAPP_API_KEY", "DATABASE_URL"]:
+            if k not in settings_dict:
+                settings_dict[k] = v
+                
+    return settings_dict
 
 @app.post("/api/settings")
-def save_settings(data: dict):
+def save_settings(data: dict, session: Session = Depends(get_session)):
+    from core.models import SystemSettings
+    import os
     try:
-        # Read existing
-        lines = []
-        if ENV_PATH.exists():
-            with open(ENV_PATH, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        
-        # Update or append
-        updated_keys = set()
-        new_lines = []
-        for line in lines:
-            line_str = line.strip()
-            if not line_str or line_str.startswith("#"):
-                new_lines.append(line)
-                continue
-            
-            if "=" in line_str:
-                key = line_str.split("=", 1)[0]
-                if key in data:
-                    new_lines.append(f"{key}={data[key]}\n")
-                    updated_keys.add(key)
-                else:
-                    new_lines.append(line)
-            else:
-                new_lines.append(line)
-                
-        # Append new keys
         for k, v in data.items():
-            if k not in updated_keys:
-                new_lines.append(f"{k}={v}\n")
-                
-        with open(ENV_PATH, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
+            setting = session.exec(select(SystemSettings).where(SystemSettings.key == k)).first()
+            if setting:
+                setting.value = str(v)
+                session.add(setting)
+            else:
+                setting = SystemSettings(key=k, value=str(v))
+                session.add(setting)
             
-        return {"status": "success", "message": "Settings saved."}
+            # Immediately update process environment so os.getenv sees it
+            os.environ[k] = str(v)
+        
+        session.commit()
+        return {"status": "success", "message": "Settings saved to database."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
