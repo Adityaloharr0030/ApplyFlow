@@ -717,5 +717,7 @@ def save_platforms(data: dict):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("dashboard:app", host="0.0.0.0", port=8000, reload=True)
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("dashboard:app", host="0.0.0.0", port=port, reload=False)
 
