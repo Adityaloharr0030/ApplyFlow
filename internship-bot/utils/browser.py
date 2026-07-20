@@ -268,9 +268,15 @@ def create_driver():
         options = uc.ChromeOptions()
 
         # ── Persistent bot profile (sessions, cookies, localStorage) ──
-        # Derive path relative to project root so it works on any drive/install.
-        _project_root = Path(__file__).resolve().parents[1]
-        profile_path = _project_root / "bot_chrome_profile"
+        # Allow overriding the profile directory via .env (e.g. for main Chrome profile)
+        env_profile_path = os.getenv("CHROME_USER_DATA_DIR")
+        if env_profile_path and os.path.exists(env_profile_path):
+            profile_path = Path(env_profile_path)
+            logger.info(f"Using custom Chrome profile from: {profile_path}")
+        else:
+            _project_root = Path(__file__).resolve().parents[1]
+            profile_path = _project_root / "bot_chrome_profile"
+            
         user_data_dir = str(profile_path)
         
         # Load or generate persistent fingerprint

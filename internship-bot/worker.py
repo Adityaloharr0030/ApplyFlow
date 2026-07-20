@@ -5,7 +5,7 @@ import logging
 from sqlmodel import select
 from core.db import get_session, engine
 from core.models import JobQueue
-from main import run_bot
+from main import run_pipeline
 import sys
 
 logging.basicConfig(level=logging.INFO)
@@ -15,7 +15,8 @@ def poll_jobs():
     logger.info("Worker started. Polling for jobs...")
     while True:
         try:
-            with get_session() as session:
+            from sqlmodel import Session
+            with Session(engine) as session:
                 # Find pending jobs
                 statement = select(JobQueue).where(JobQueue.status == "pending").order_by(JobQueue.created_at)
                 job = session.exec(statement).first()
