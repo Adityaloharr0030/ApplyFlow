@@ -324,6 +324,12 @@ from core.models import User, UserProfile
 from core.auth import get_password_hash, verify_password, create_access_token, get_current_user
 from fastapi.security import OAuth2PasswordRequestForm
 
+@app.get("/api/health")
+def health_check():
+    """Health check endpoint for Render's health monitoring."""
+    return {"status": "ok", "service": "ApplyFlow API"}
+
+
 class UserCreate(BaseModel):
     email: EmailStr
     password: str

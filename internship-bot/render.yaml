@@ -7,6 +7,10 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: DATABASE_URL
-        sync: false
+        value: "postgresql://neondb_owner:npg_qL0mWCJV3UiS@ep-mute-violet-au9oj8hf.c-10.us-east-1.aws.neon.tech/neondb?sslmode=require"
       - key: CORS_ORIGINS
         value: "*"
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: SESSION_SECRET_KEY
+        generateValue: true
