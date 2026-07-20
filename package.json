@@ -1,0 +1,1 @@
+﻿{"scripts": {"build": "cd internship-bot/dashboard/frontend && npm install && npm run build"}}
