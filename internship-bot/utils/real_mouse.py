@@ -289,10 +289,49 @@ def bring_browser_to_front(driver):
     """
     Bring the browser window to the foreground so real mouse clicks
     land on the correct window.
+
+    Uses Win32 API (win32gui) for true OS-level foreground promotion on Windows.
+    Falls back to JavaScript focus on Linux/macOS.
     """
+    # Step 1: Switch Selenium focus to the current window handle
     try:
         driver.switch_to.window(driver.current_window_handle)
-        # Also try to maximize/restore to ensure it's on top
+    except Exception:
+        pass
+
+    # Step 2: Try Win32 API for true OS-level foreground (Windows only)
+    try:
+        import win32gui
+        import win32con
+
+        title = driver.title or ""
+
+        def _enum_callback(hwnd, results):
+            if win32gui.IsWindowVisible(hwnd):
+                win_title = win32gui.GetWindowText(hwnd)
+                # Match Chrome windows (title contains page title or "Chrome")
+                if title and title[:20].lower() in win_title.lower():
+                    results.append(hwnd)
+                elif "chrome" in win_title.lower() or "chromium" in win_title.lower():
+                    results.append(hwnd)
+
+        matches = []
+        win32gui.EnumWindows(_enum_callback, matches)
+
+        if matches:
+            hwnd = matches[0]
+            # Restore if minimised, then bring to foreground
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(hwnd)
+            logger.debug(f"[RealMouse] ✓ Win32 foreground focus set (hwnd={hwnd})")
+            return
+    except ImportError:
+        pass  # pywin32 not installed — fall through to JS focus
+    except Exception as e:
+        logger.debug(f"[RealMouse] Win32 focus failed: {e}")
+
+    # Step 3: JavaScript focus as universal fallback
+    try:
         driver.execute_script("window.focus();")
     except Exception:
         pass

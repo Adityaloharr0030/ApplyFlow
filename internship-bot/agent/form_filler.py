@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 
 from agent.ai_client import get_ai_response
 from agent.qa_cache import get_cached_answer, cache_answer
+try:
+    from agent.action_trainer import record_qa, record_action
+    _trainer_available = True
+except ImportError:
+    _trainer_available = False
+    def record_qa(*a, **kw): pass
+    def record_action(*a, **kw): pass
 
 # ── India-Specific Known Fields ────────────────────────────────────────────────
 # Maps question label keywords → a function that extracts the answer from profile.
@@ -118,12 +125,14 @@ def answer_question(question: str, profile: dict) -> str:
     india_answer = _match_india_field(question, profile)
     if india_answer:
         logger.info(f"  [FormFiller] India field match: {question[:40]}... → {india_answer[:30]}")
+        record_qa(question, india_answer, source="india_field")
         return india_answer
 
     # 2. Check Q&A cache
     cached = get_cached_answer(question)
     if cached:
         logger.info(f"  [FormFiller] Cache hit: {question[:40]}...")
+        record_qa(question, cached, source="cache")
         return cached
 
     # 3. AI-generated answer
@@ -151,6 +160,7 @@ Write ONLY the answer to the question."""
             answer = answer.strip()
             # Cache for future reuse
             cache_answer(question, answer)
+            record_qa(question, answer, source="ai")
             logger.info(f"  [FormFiller] AI answer generated: {question[:40]}...")
             return answer
 
@@ -158,7 +168,9 @@ Write ONLY the answer to the question."""
         logger.error(f"  [FormFiller] AI answer generation failed: {e}")
 
     # 4. Fallback
-    return "Yes, I am available to start immediately and meet the requirements."
+    fallback = "Yes, I am available to start immediately and meet the requirements."
+    record_qa(question, fallback, source="fallback")
+    return fallback
 
 
 def fill_form_fields(driver, profile: dict, skip_selectors: list = None) -> int:
@@ -222,10 +234,19 @@ def fill_form_fields(driver, profile: dict, skip_selectors: list = None) -> int:
                 answer = answer_question(label_text, profile)
                 if answer:
                     try:
-                        inp.clear()
+                        # Use real_type for visible mouse interaction if available
+                        try:
+                            from utils.real_mouse import real_type, HAS_PYAUTOGUI
+                            if HAS_PYAUTOGUI:
+                                real_type(driver, inp, answer)
+                            else:
+                                inp.clear()
+                                inp.send_keys(answer)
+                        except Exception:
+                            inp.clear()
+                            inp.send_keys(answer)
                     except Exception:
                         pass
-                    inp.send_keys(answer)
                     filled += 1
                     logger.info(f"  [FormFiller] Filled: {label_text[:30]}... → {answer[:30]}...")
                     time.sleep(random.uniform(0.3, 0.8))

@@ -108,8 +108,15 @@ class LinkedInPlatform(Platform):
             from utils.real_mouse import real_click, bring_browser_to_front
             from utils.human_sim import random_idle, simulate_page_read
             from agent.form_filler import fill_form_fields, answer_question
+            try:
+                from agent.action_trainer import record_action
+            except ImportError:
+                def record_action(*a, **kw): pass
 
             apply_url = listing.get("apply_url", "")
+            record_action("browser_open", platform="linkedin",
+                          listing_title=listing.get("title", ""),
+                          company=listing.get("company", ""), url=apply_url)
             logger.info(f"[LinkedIn] Navigating to: {apply_url}")
             driver.get(apply_url)
             random_idle(3.0, 5.0)
@@ -133,6 +140,9 @@ class LinkedInPlatform(Platform):
                 real_click(driver, easy_apply_btn)
                 easy_apply_clicked = True
                 logger.info("  ✓ Clicked Easy Apply button (real mouse)")
+                record_action("click_easy_apply", platform="linkedin", element="Easy Apply button",
+                              listing_title=listing.get("title", ""), company=listing.get("company", ""),
+                              url=apply_url)
                 random_idle(2.0, 3.0)
             except Exception:
                 logger.warning("[LinkedIn] Could not find Easy Apply button. Trying text-based fallback...")
@@ -251,6 +261,9 @@ class LinkedInPlatform(Platform):
                         real_click(driver, submit_btn)
                         logger.info("  ✓ Clicked Submit Application (real mouse)")
                         random_idle(3.0, 5.0)
+                        record_action("apply_success", platform="linkedin",
+                                      listing_title=listing.get("title", ""), company=listing.get("company", ""),
+                                      url=apply_url)
                         self.captcha_count = 0
                         return {"success": True, "message": "LinkedIn Application submitted successfully"}
 

@@ -25,6 +25,10 @@ API_CALL_DELAY = 2.5
 MAX_RETRIES = 2
 
 from agent.ai_client import get_ai_response
+try:
+    from agent.action_trainer import record_score
+except ImportError:
+    def record_score(*a, **kw): pass
 
 _ai_disabled = False
 
@@ -211,6 +215,7 @@ def score_listing(listing: dict, profile: dict) -> dict:
                     f"  [{status}] {listing.get('title', '?')} @ {listing.get('company', '?')} "
                     f"→ {ai_result['score']}/10 (AI+resume) — {ai_result['reason']}"
                 )
+                record_score(listing, ai_result["score"], ai_result["reason"], ai_result["apply"], method="ai")
                 return ai_result
 
         local = _score_with_keywords(listing, profile)
@@ -219,6 +224,7 @@ def score_listing(listing: dict, profile: dict) -> dict:
             f"  [{status}] {listing.get('title', '?')} @ {listing.get('company', '?')} "
             f"→ {local['score']}/10 (local) — {local['reason']}"
         )
+        record_score(listing, local["score"], local["reason"], local["apply"], method="keyword")
         return local
 
     except Exception as e:

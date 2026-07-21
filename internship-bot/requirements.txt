@@ -10,6 +10,8 @@ python-jobspy>=1.1.0
 # --- Browser Automation ---
 selenium>=4.21.0
 undetected-chromedriver>=3.5.5
+pyautogui>=0.9.54         # Real OS mouse movement (real_mouse.py)
+pywin32>=306              # Win32 window focus (bring browser to front on Windows)
 # --- AI (Google Gemini & Anthropic Claude) ---
 # NOTE: google-generativeai is DEPRECATED – use google-genai
 google-genai>=1.0.0

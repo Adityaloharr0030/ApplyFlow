@@ -206,8 +206,15 @@ class InternshalaPlatform(Platform):
             from utils.human_sim import random_idle
             from utils.otp_handler import handle_otp_if_present
             from agent.form_filler import fill_form_fields, answer_question
+            try:
+                from agent.action_trainer import record_action
+            except ImportError:
+                def record_action(*a, **kw): pass
 
             apply_url = listing.get("apply_url", "")
+            record_action("browser_open", platform="internshala",
+                          listing_title=listing.get("title", ""),
+                          company=listing.get("company", ""), url=apply_url)
 
             # Human-like warm-up: briefly visit homepage before jumping to listing
             try:
@@ -271,6 +278,9 @@ class InternshalaPlatform(Platform):
                         real_click(driver, btn)
                         apply_clicked = True
                         logger.info("  ✓ Clicked Apply Now button (real mouse)")
+                        record_action("click_apply", platform="internshala", element="Apply Now button",
+                                      listing_title=listing.get("title", ""), company=listing.get("company", ""),
+                                      url=apply_url)
                         random_idle(2.0, 3.0)
                         break
                 except Exception:
@@ -387,6 +397,9 @@ class InternshalaPlatform(Platform):
                     f"[Internshala] ✅ Successfully applied to "
                     f"{listing.get('title')} at {listing.get('company')}"
                 )
+                record_action("apply_success", platform="internshala",
+                              listing_title=listing.get("title", ""), company=listing.get("company", ""),
+                              url=apply_url)
                 self.captcha_count = 0
                 return {"success": True, "message": "Application submitted successfully"}
 
