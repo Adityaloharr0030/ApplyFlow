@@ -335,7 +335,8 @@ class StartBotRequest(BaseModel):
     platform: Optional[str] = "all"
 
 @app.post("/api/start")
-def start_bot(req: StartBotRequest):
+def start_bot(req: StartBotRequest = None):
+    req = req or StartBotRequest()
     success = spawn_bot_process(
         dry_run=req.dry_run,
         headless=req.headless,
