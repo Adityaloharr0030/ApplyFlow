@@ -14,39 +14,40 @@ from typing import Optional
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Depends
-from fastapi.security import APIKeyHeader
+from fastapi.security import APIKeyHeader, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi import UploadFile, File
+from pydantic import BaseModel, EmailStr
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import base64
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlmodel import Session, select
+
+from core.db import get_session, engine, init_db
+from core.models import User, UserProfile, UserSettings, ApplicationLog
+from core.auth import get_password_hash, verify_password, create_access_token, get_current_user
 
 app = FastAPI(title="ApplyFlow Dashboard API", version="2.0.0")
 
+# ── Database init on startup ───────────────────────────────────────────────────
 @app.on_event("startup")
 def startup_event():
-    from core.db import init_db
     try:
-        init_db()  # Create all tables in the database
+        init_db()
         print("Database initialized successfully.")
     except Exception as e:
         print(f"Failed to initialize database: {e}")
 
+# ── API Key ────────────────────────────────────────────────────────────────────
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 def verify_api_key(api_key: str = Depends(api_key_header)):
-    # Local mode: completely skip API key verification since auth is removed
     return api_key
 
-@app.on_event("startup")
-def on_startup():
-    from core.db import init_db
-    init_db()
-
-# Allow CORS for the Vite frontend
+# ── CORS ───────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -55,13 +56,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 LOGS_DIR = BASE_DIR / "logs"
 CSV_PATH = LOGS_DIR / "applications.csv"
 SESSION_DIR = BASE_DIR / "data" / "sessions"
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
-# Schedule files
+# ── Schedule config ────────────────────────────────────────────────────────────
 SCHEDULE_CONFIG_FILE = BASE_DIR / "data" / "schedule_config.json"
 VALID_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 DEFAULT_SCHEDULE_CONFIG = {
@@ -79,7 +81,7 @@ current_process_lock = threading.Lock()
 
 # ── Session State ──────────────────────────────────────────────────────────────
 session_state = {
-    "status": "idle",  # idle, running, paused
+    "status": "idle",
     "started_at": None,
     "current_platform": "",
     "current_listing": "",
@@ -107,9 +109,7 @@ def get_aesgcm_key():
     )
     return kdf.derive(secret.encode('utf-8'))
 
-# ──────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 def get_latest_log_file() -> Path | None:
     log_files = list(LOGS_DIR.glob("run_*.log"))
     if not log_files:
@@ -232,7 +232,7 @@ def spawn_bot_process(dry_run: bool, headless: bool = True, platform: Optional[s
         try:
             cmd = [sys.executable, "main.py"]
             if run_now:
-                cmd.append("--run-now")   # Always run immediately when launched from dashboard
+                cmd.append("--run-now")
             if dry_run:
                 cmd.append("--dry-run")
             if not headless:
@@ -262,12 +262,10 @@ def spawn_bot_process(dry_run: bool, headless: bool = True, platform: Optional[s
             session_state["current_platform"] = platform or "all"
             session_state["events"] = [{"timestamp": datetime.now().isoformat(), "type": "info", "message": f"Bot process launched (PID {current_process.pid}) — {'DRY RUN' if dry_run else 'LIVE'}"}]
             
-            # Background watcher: resets session_state once the process exits
             proc_ref = current_process
             def _watch_process():
-                proc_ref.wait()  # blocks until process exits
+                proc_ref.wait()
                 exit_code = proc_ref.returncode
-                # Only reset if this is still the current process (not a newer run)
                 if current_process is proc_ref:
                     session_state["status"] = "idle"
                     session_state["current_platform"] = ""
@@ -308,9 +306,6 @@ def stop_bot_process() -> bool:
 
 @app.on_event("startup")
 def startup_scheduler():
-    from core.db import init_db
-    init_db()
-    
     config = load_schedule_config()
     if not SCHEDULE_CONFIG_FILE.exists():
         save_schedule_config(config)
@@ -319,16 +314,44 @@ def startup_scheduler():
         scheduler.start()
     print(f"[api] Scheduler started; enabled={config.get('enabled')} next_run={get_next_scheduled_run()}")
 
-# ──────────────────────────────────────────────────────────────
-# Endpoints
-# ──────────────────────────────────────────────────────────────
-from pydantic import BaseModel, EmailStr
-from core.db import get_session
-from sqlmodel import Session
-from core.models import User, UserProfile
-from core.auth import get_password_hash, verify_password, create_access_token, get_current_user
-from fastapi.security import OAuth2PasswordRequestForm
+# ── Health Check ───────────────────────────────────────────────────────────────
+@app.get("/api/health")
+def health_check():
+    """Health check endpoint for Render's health monitoring."""
+    return {"status": "ok", "service": "ApplyFlow API"}
 
+# ── Auth Endpoints ─────────────────────────────────────────────────────────────
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str
+    name: str = "Unknown Candidate"
+
+@app.post("/api/auth/register")
+def register_user(user: UserCreate, session: Session = Depends(get_session)):
+    if session.exec(select(User).where(User.email == user.email)).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+        
+    db_user = User(email=user.email, hashed_password=get_password_hash(user.password))
+    session.add(db_user)
+    session.commit()
+    session.refresh(db_user)
+    
+    db_profile = UserProfile(user_id=db_user.id, name=user.name)
+    session.add(db_profile)
+    session.commit()
+    
+    return {"message": "User registered successfully"}
+
+@app.post("/api/auth/login")
+def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_session)):
+    user = session.exec(select(User).where(User.email == form_data.username)).first()
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+        
+    access_token = create_access_token(data={"sub": user.id})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+# ── Bot Control Endpoints ──────────────────────────────────────────────────────
 class StartBotRequest(BaseModel):
     dry_run: bool = True
     headless: bool = True
@@ -366,7 +389,6 @@ def get_logs(lines: int = Query(100)):
     log_file = get_latest_log_file()
     if not log_file:
         return {"logs": ["No logs found. Run the bot first."]}
-    
     try:
         with open(log_file, "r", encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()
@@ -374,50 +396,9 @@ def get_logs(lines: int = Query(100)):
     except Exception as e:
         return {"logs": [f"Failed to read logs: {e}"]}
 
-@app.get("/api/health")
-def health_check():
-    """Health check endpoint for Render's health monitoring."""
-    return {"status": "ok", "service": "ApplyFlow API"}
-
-
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str
-    name: str = "Unknown Candidate"
-
-@app.post("/api/auth/register")
-def register_user(user: UserCreate, session: Session = Depends(get_session)):
-    from sqlmodel import select
-    if session.exec(select(User).where(User.email == user.email)).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
-        
-    db_user = User(email=user.email, hashed_password=get_password_hash(user.password))
-    session.add(db_user)
-    session.commit()
-    session.refresh(db_user)
-    
-    db_profile = UserProfile(user_id=db_user.id, name=user.name)
-    session.add(db_profile)
-    session.commit()
-    
-    return {"message": "User registered successfully"}
-
-@app.post("/api/auth/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_session)):
-    from sqlmodel import select
-    user = session.exec(select(User).where(User.email == form_data.username)).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="Incorrect email or password")
-        
-    access_token = create_access_token(data={"sub": user.id})
-    return {"access_token": access_token, "token_type": "bearer"}
-
-
+# ── Stats & Applications Endpoints ────────────────────────────────────────────
 @app.get("/api/stats")
 def get_stats(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    from core.models import ApplicationLog
-    from sqlmodel import select
-    
     logs = session.exec(select(ApplicationLog).where(ApplicationLog.user_id == user.id)).all()
     
     if not logs:
@@ -432,19 +413,16 @@ def get_stats(session: Session = Depends(get_session), user: User = Depends(get_
 
     platforms = {}
     today_applied = 0
-    import datetime
-    today = datetime.datetime.now().date()
+    import datetime as dt
+    today = dt.datetime.now().date()
     
     for log in logs:
-        # Platforms
         platforms[log.platform] = platforms.get(log.platform, 0) + 1
-        
-        # Today
         try:
-            log_date = datetime.datetime.fromisoformat(log.applied_at).date()
+            log_date = dt.datetime.fromisoformat(log.applied_at).date()
             if log_date == today:
                 today_applied += 1
-        except:
+        except Exception:
             pass
 
     success_logs = [l for l in logs if l.status.lower() in ("success", "applied")]
@@ -460,11 +438,9 @@ def get_stats(session: Session = Depends(get_session), user: User = Depends(get_
         "recent": recent,
         "session": session_state,
     }
+
 @app.get("/api/applications")
 def get_applications(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    from core.models import ApplicationLog
-    from sqlmodel import select
-    
     logs = session.exec(select(ApplicationLog).where(ApplicationLog.user_id == user.id).order_by(ApplicationLog.id.desc())).all()
     
     if not logs:
@@ -490,6 +466,7 @@ def get_applications(session: Session = Depends(get_session), user: User = Depen
         "metrics": metrics,
         "applications": [l.model_dump() for l in logs]
     }
+
 @app.get("/api/history")
 def get_history(
     page: int = Query(1, ge=1),
@@ -501,9 +478,6 @@ def get_history(
     session: Session = Depends(get_session),
     user: User = Depends(get_current_user)
 ):
-    from core.models import ApplicationLog
-    from sqlmodel import select
-    
     query = select(ApplicationLog).where(ApplicationLog.user_id == user.id)
     
     if platform:
@@ -525,31 +499,25 @@ def get_history(
         "page": page,
         "per_page": per_page
     }
+
 @app.get("/api/history/applications")
-def get_history():
-    from core.db import engine
-    from sqlmodel import Session, select
-    from core.models import ApplicationLog
+def get_history_applications(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    """Alias endpoint for dashboard compatibility — returns last 100 for current user."""
     try:
-        with Session(engine) as session:
-            # Get the last 100 applications, newest first
-            statement = select(ApplicationLog).order_by(ApplicationLog.id.desc()).limit(100)
-            results = session.exec(statement).all()
-            # Convert SQLModel objects to dicts
-            return [row.model_dump() for row in results]
+        results = session.exec(
+            select(ApplicationLog).where(ApplicationLog.user_id == user.id).order_by(ApplicationLog.id.desc()).limit(100)
+        ).all()
+        return [row.model_dump() for row in results]
     except Exception as e:
         print(f"Failed to fetch history: {e}")
         return []
 
 # ── Profile & Settings Endpoints ─────────────────────────────────────────────
-
 PROFILE_PATH = BASE_DIR / "data" / "profile.json"
 ENV_PATH = BASE_DIR / ".env"
 
 @app.get("/api/profile")
 def get_profile(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    from sqlmodel import select
-    from core.models import UserProfile
     profile = session.exec(select(UserProfile).where(UserProfile.user_id == user.id)).first()
     if not profile:
         return {}
@@ -557,8 +525,6 @@ def get_profile(session: Session = Depends(get_session), user: User = Depends(ge
 
 @app.post("/api/profile")
 async def save_profile(data: dict, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    from sqlmodel import select
-    from core.models import UserProfile
     try:
         profile = session.exec(select(UserProfile).where(UserProfile.user_id == user.id)).first()
         if profile:
@@ -576,14 +542,12 @@ async def save_profile(data: dict, session: Session = Depends(get_session), user
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-from fastapi import UploadFile, File
 import io
 
 @app.post("/api/profile/parse-resume")
 async def parse_resume(file: UploadFile = File(...), user: User = Depends(get_current_user)):
     import pypdf
     from agent.ai_client import get_ai_response
-    import json
     
     try:
         pdf_bytes = await file.read()
@@ -643,7 +607,6 @@ async def parse_resume(file: UploadFile = File(...), user: User = Depends(get_cu
 
 @app.get("/api/settings")
 def get_settings(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    from core.models import UserSettings
     # Load user specific keys from DB
     db_settings = session.exec(select(UserSettings).where(UserSettings.user_id == user.id)).all()
     settings_dict = {s.key: s.value for s in db_settings}
@@ -658,9 +621,6 @@ def get_settings(session: Session = Depends(get_session), user: User = Depends(g
 
 @app.post("/api/settings")
 def save_settings(data: dict, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    from core.models import UserSettings
-    from sqlmodel import select
-    import os
     try:
         for k, v in data.items():
             setting = session.exec(select(UserSettings).where(UserSettings.key == k, UserSettings.user_id == user.id)).first()
@@ -671,15 +631,27 @@ def save_settings(data: dict, session: Session = Depends(get_session), user: Use
                 setting = UserSettings(user_id=user.id, key=k, value=str(v))
                 session.add(setting)
             
-            # NOTE: We DO NOT update os.environ anymore because API keys are now user-specific!
+            # NOTE: We DO NOT update os.environ because API keys are now user-specific!
         
         session.commit()
         return {"status": "success", "message": "Settings saved to database."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ── Interview Prep Endpoints ──────────────────────────────────────────────────
+# ── Schedule Endpoints ─────────────────────────────────────────────────────────
+@app.get("/api/schedule")
+def get_schedule():
+    config = load_schedule_config()
+    return {**config, "next_run": get_next_scheduled_run()}
 
+@app.post("/api/schedule")
+def save_schedule(config: dict):
+    validated = validate_schedule_config(config)
+    save_schedule_config(validated)
+    schedule_jobs_from_config(validated)
+    return {**validated, "next_run": get_next_scheduled_run()}
+
+# ── Interview Prep Endpoints ──────────────────────────────────────────────────
 PREP_DIR = BASE_DIR / "logs" / "prep"
 
 @app.get("/api/prep")
@@ -698,7 +670,6 @@ def list_prep_guides():
 @app.get("/api/prep/{filename}")
 def get_prep_guide(filename: str):
     PREP_DIR.mkdir(parents=True, exist_ok=True)
-    # Security: only allow .txt files with no path traversal
     if ".." in filename or "/" in filename or not filename.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Invalid filename")
     path = PREP_DIR / filename
@@ -711,14 +682,13 @@ class GeneratePrepRequest(BaseModel):
     role: str
 
 @app.post("/api/prep/generate")
-def generate_prep(req: GeneratePrepRequest):
+def generate_prep(req: GeneratePrepRequest, user: User = Depends(get_current_user)):
     try:
         from agent.ai_client import get_ai_response
         system_prompt = "You are an expert interview coach. Given the role and job description, generate a concise, actionable interview prep guide. Focus on likely technical questions, behavioral themes, and key company context. Format with clear Markdown headings."
         user_prompt = f"Role: {req.role}\n\nJob Description:\n{req.job_description}"
-        response = get_ai_response(system_prompt, user_prompt, max_tokens=1500)
+        response = get_ai_response(system_prompt, user_prompt, max_tokens=1500, user_id=user.id)
         
-        # Save it
         filename = f"{re.sub(r'[^a-zA-Z0-9]', '_', req.role).lower()}_{int(time.time())}.txt"
         path = PREP_DIR / filename
         PREP_DIR.mkdir(parents=True, exist_ok=True)
@@ -728,9 +698,7 @@ def generate_prep(req: GeneratePrepRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ── Platforms Endpoints ───────────────────────────────────────────────────────
-
 PLATFORMS_PATH = BASE_DIR / "data" / "platforms.json"
 DEFAULT_PLATFORMS = {
     "internshala": {"enabled": True, "max_applies": 10},
@@ -747,7 +715,6 @@ def get_platforms():
         try:
             with open(PLATFORMS_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # Merge with defaults for any missing platforms
             for k, v in DEFAULT_PLATFORMS.items():
                 if k not in data:
                     data[k] = v
@@ -768,9 +735,5 @@ def save_platforms(data: dict):
 
 if __name__ == "__main__":
     import uvicorn
-    import os
-    from core.db import init_db
-    init_db()  # Ensure tables are created on boot
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("dashboard:app", host="0.0.0.0", port=port, reload=False)
-

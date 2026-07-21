@@ -48,7 +48,6 @@ def _get_setting(key: str, user_id: Optional[int] = None, default: str = "") -> 
         return val
         
     return default
-    return default
 
 def _get_gemini_model(model_type: str) -> str:
     if model_type == "scorer":
