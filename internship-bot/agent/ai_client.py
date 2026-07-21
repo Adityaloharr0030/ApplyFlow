@@ -50,11 +50,12 @@ def _get_setting(key: str, user_id: Optional[int] = None, default: str = "") -> 
     return default
 
 def _get_gemini_model(model_type: str) -> str:
+    base_model = _get_setting("GEMINI_MODEL", default="gemini-1.5-flash")
     if model_type == "scorer":
-        return _get_setting("TUNED_SCORER_MODEL", _get_setting("GEMINI_MODEL", "gemini-1.5-flash"))
+        return _get_setting("TUNED_SCORER_MODEL", default=base_model)
     elif model_type == "cover":
-        return _get_setting("TUNED_COVER_MODEL", _get_setting("GEMINI_MODEL", "gemini-1.5-flash"))
-    return _get_setting("GEMINI_MODEL", "gemini-1.5-flash")
+        return _get_setting("TUNED_COVER_MODEL", default=base_model)
+    return base_model
 
 class AILimitReached(Exception):
     """Raised when an API rate limit or quota is hit."""
@@ -186,7 +187,7 @@ def _call_groq(api_key: str, system_prompt: str, user_prompt: str, max_tokens: i
     try:
         from groq import Groq
 
-        model = _get_setting("GROQ_MODEL", "llama-3.3-70b-versatile")
+        model = _get_setting("GROQ_MODEL", default="llama-3.3-70b-versatile")
         logger.debug(f"[AI] Calling Groq ({model}) using key {masked_key}")
 
         client = Groq(api_key=api_key)
