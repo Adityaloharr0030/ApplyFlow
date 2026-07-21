@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { apiFetch as fetch } from '../utils/apiFetch';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-function OverviewTab({ stats, session, runStatus, events, sessionStatus, onStart, onStop }) {
+function OverviewTab({ stats, session, runStatus, events, onStart, onStop }) {
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center bg-slate-900 border border-slate-800 p-6 rounded-2xl">
@@ -143,6 +143,7 @@ function HistoryTab() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     fetch(`${API_BASE}/api/history/applications`)
       .then(res => res.json())
@@ -384,8 +385,7 @@ export default function DashboardPage() {
   const [applications, setApplications] = useState([]);
   const [logs, setLogs] = useState([]);
   const [runStatus, setRunStatus] = useState({ is_running: false, started_at: null, next_run: null, schedule_enabled: false });
-  const [events, setEvents] = useState([]);
-  const [sessionStatus, setSessionStatus] = useState({});
+  const [events] = useState([]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -395,7 +395,9 @@ export default function DashboardPage() {
         setStats(data);
         if (data.session) setSession(prev => ({ ...prev, ...data.session }));
       }
-    } catch (err) {}
+    } catch {
+      // Ignore errors
+    }
   }, []);
 
   const fetchApplications = useCallback(async () => {
@@ -405,7 +407,9 @@ export default function DashboardPage() {
         const data = await res.json();
         setApplications(Array.isArray(data) ? data : []);
       }
-    } catch (err) {}
+    } catch {
+      // Ignore errors
+    }
   }, []);
 
   const fetchLogs = useCallback(async () => {
@@ -415,7 +419,9 @@ export default function DashboardPage() {
         const data = await res.json();
         setLogs(data.logs || []);
       }
-    } catch (err) {}
+    } catch {
+      // Ignore errors
+    }
   }, []);
 
   const fetchStatus = useCallback(async () => {
@@ -425,10 +431,13 @@ export default function DashboardPage() {
         const data = await res.json();
         setRunStatus(data);
       }
-    } catch (err) {}
+    } catch {
+      // Ignore errors
+    }
   }, []);
 
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     fetchStats();
     fetchStatus();
     
@@ -439,9 +448,11 @@ export default function DashboardPage() {
       clearInterval(statusInterval);
       clearInterval(statsInterval);
     };
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [fetchStats, fetchStatus]);
 
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     let interval;
     if (activeTab === 'applications') {
       fetchApplications();
@@ -451,13 +462,14 @@ export default function DashboardPage() {
       interval = setInterval(fetchLogs, 2000);
     }
     return () => interval && clearInterval(interval);
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [activeTab, fetchApplications, fetchLogs]);
 
   const handleStart = async () => {
     try {
       await fetch(`${API_BASE}/api/start`, { method: 'POST' });
       fetchStatus();
-    } catch (err) {
+    } catch {
       alert('Failed to start bot.');
     }
   };
@@ -466,7 +478,7 @@ export default function DashboardPage() {
     try {
       await fetch(`${API_BASE}/api/stop`, { method: 'POST' });
       fetchStatus();
-    } catch (err) {
+    } catch {
       alert('Failed to stop bot.');
     }
   };
@@ -504,7 +516,6 @@ export default function DashboardPage() {
             session={session} 
             runStatus={runStatus} 
             events={events} 
-            sessionStatus={sessionStatus} 
             onStart={handleStart} 
             onStop={handleStop} 
           />

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { apiFetch as fetch } from '../utils/apiFetch';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -39,7 +39,6 @@ export default function HistoryPage() {
   const [page, setPage] = useState(1);
 
   useEffect(() => {
-    setLoading(true);
     fetch(`${API_BASE}/api/applications`)
       .then(r => r.json())
       .then(data => {

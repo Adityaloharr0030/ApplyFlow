@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { apiFetch as fetch } from '../utils/apiFetch';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -71,7 +71,7 @@ export default function SchedulesPage() {
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch (e) {
+    } catch {
       alert('Failed to save schedule.');
     }
     setSaving(false);
@@ -91,7 +91,7 @@ export default function SchedulesPage() {
         alert(dryRun ? '🧪 Dry run started! Check the Dashboard.' : '🚀 Bot launched! Check the Dashboard.');
       }
       fetch(`${API_BASE}/api/status`).then(r => r.json()).then(d => setStatus(d));
-    } catch (e) {
+    } catch {
       alert('Failed to start bot.');
     }
   };
@@ -100,7 +100,7 @@ export default function SchedulesPage() {
     try {
       await fetch(`${API_BASE}/api/stop`, { method: 'POST' });
       fetch(`${API_BASE}/api/status`).then(r => r.json()).then(d => setStatus(d));
-    } catch (e) {
+    } catch {
       alert('Failed to stop bot.');
     }
   };

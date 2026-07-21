@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -62,8 +62,8 @@ export default function AuthPage() {
           setError(data.detail || 'Registration failed');
         }
       }
-    } catch (err) {
-      setError('Network error');
+    } catch {
+      setError('Network error connecting to server.');
     } finally {
       setLoading(false);
     }

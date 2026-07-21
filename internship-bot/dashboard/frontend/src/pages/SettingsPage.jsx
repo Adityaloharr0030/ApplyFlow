@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { apiFetch as fetch } from '../utils/apiFetch';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -149,7 +149,7 @@ export default function SettingsPage() {
         body: JSON.stringify(payload)
       });
       alert('Settings saved successfully!');
-    } catch (e) {
+    } catch {
       alert('Failed to save settings.');
     }
     setSaving(false);

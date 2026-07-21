@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { apiFetch as fetch } from '../utils/apiFetch';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -150,7 +150,6 @@ export default function InterviewPrepPage() {
   const [openGuide, setOpenGuide] = useState(null);
 
   const loadFiles = () => {
-    setLoading(true);
     fetch(`${API_BASE}/api/prep`)
       .then(r => r.json())
       .then(data => { setFiles(Array.isArray(data) ? data : []); setLoading(false); })
@@ -215,7 +214,7 @@ export default function InterviewPrepPage() {
         <div className="space-y-3">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-white font-semibold">{files.length} prep guide{files.length !== 1 ? 's' : ''} saved</h2>
-            <button onClick={loadFiles} className="text-xs text-slate-500 hover:text-white transition-colors">↻ Refresh</button>
+            <button onClick={() => { setLoading(true); loadFiles(); }} className="text-xs text-slate-500 hover:text-white transition-colors">↻ Refresh</button>
           </div>
           {files.map(file => (
             <PrepGuideCard key={file.filename} file={file} onOpen={handleOpen} />
