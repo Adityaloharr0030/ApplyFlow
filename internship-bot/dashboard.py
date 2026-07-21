@@ -329,6 +329,50 @@ from core.models import User, UserProfile
 from core.auth import get_password_hash, verify_password, create_access_token, get_current_user
 from fastapi.security import OAuth2PasswordRequestForm
 
+class StartBotRequest(BaseModel):
+    dry_run: bool = True
+    headless: bool = True
+    platform: Optional[str] = "all"
+
+@app.post("/api/start")
+def start_bot(req: StartBotRequest):
+    success = spawn_bot_process(
+        dry_run=req.dry_run,
+        headless=req.headless,
+        platform=req.platform,
+        run_now=True
+    )
+    if success:
+        return {"status": "success", "message": "Bot started successfully"}
+    return {"status": "error", "message": "Bot is already running"}
+
+@app.post("/api/stop")
+def stop_bot():
+    stopped = stop_bot_process()
+    if stopped:
+        return {"status": "success", "message": "Bot stopped successfully"}
+    return {"status": "error", "message": "Bot was not running"}
+
+@app.get("/api/status")
+def get_status():
+    return {
+        "status": session_state["status"],
+        "session": session_state
+    }
+
+@app.get("/api/logs")
+def get_logs(lines: int = Query(100)):
+    log_file = get_latest_log_file()
+    if not log_file:
+        return {"logs": ["No logs found. Run the bot first."]}
+    
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+            return {"logs": [l.rstrip() for l in all_lines[-lines:]]}
+    except Exception as e:
+        return {"logs": [f"Failed to read logs: {e}"]}
+
 @app.get("/api/health")
 def health_check():
     """Health check endpoint for Render's health monitoring."""
