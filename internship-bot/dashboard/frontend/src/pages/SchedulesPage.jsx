@@ -26,6 +26,7 @@ export default function SchedulesPage() {
   const fetchLogs = () => {
     fetch(`${API_BASE}/api/logs?lines=12`).then(r => r.json()).then(d => {
       if (Array.isArray(d)) setLogs(d);
+      else if (d.logs) setLogs(d.logs);
       else if (d.lines) setLogs(d.lines);
     }).catch(() => {});
   };

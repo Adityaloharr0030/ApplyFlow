@@ -201,8 +201,11 @@ def schedule_jobs_from_config(config: dict):
     if not config.get("enabled", False):
         return
     hour, minute = map(int, config["time"].split(":"))
+    # Use local system timezone so "09:00" means 9 AM local time (e.g. IST), not UTC
+    import tzlocal
+    local_tz = tzlocal.get_localzone()
     for day in config["days"]:
-        trigger = CronTrigger(day_of_week=day, hour=hour, minute=minute)
+        trigger = CronTrigger(day_of_week=day, hour=hour, minute=minute, timezone=local_tz)
         scheduler.add_job(
             func=scheduled_run,
             trigger=trigger,
@@ -379,8 +382,12 @@ def stop_bot():
 
 @app.get("/api/status")
 def get_status():
+    is_running = session_state["status"] == "running"
     return {
         "status": session_state["status"],
+        "is_running": is_running,          # what the frontend checks
+        "running": is_running,             # alias for compatibility
+        "next_run": get_next_scheduled_run(),
         "session": session_state
     }
 

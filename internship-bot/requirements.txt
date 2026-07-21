@@ -29,6 +29,7 @@ pandas>=2.2.0
 # --- Scheduling ---
 schedule>=1.2.2
 apscheduler>=3.10.1
+tzlocal>=4.0
 # --- Environment Variables ---
 python-dotenv>=1.0.1
 # --- Security ---
