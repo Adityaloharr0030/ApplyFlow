@@ -278,7 +278,21 @@ def create_driver():
             profile_path = _project_root / "bot_chrome_profile"
             
         user_data_dir = str(profile_path)
-        
+
+        # ── Clear SingletonLock if Chrome crashed and left it behind ──────
+        # This lock file causes 'session not created: cannot connect to chrome'
+        # when the previous bot run crashed without properly quitting Chrome.
+        singleton_lock = profile_path / "SingletonLock"
+        singleton_socket = profile_path / "SingletonSocket"
+        singleton_cookie = profile_path / "SingletonCookie"
+        for lock_file in [singleton_lock, singleton_socket, singleton_cookie]:
+            if lock_file.exists():
+                try:
+                    lock_file.unlink()
+                    logger.info(f"[Browser] Cleared stale lock: {lock_file.name}")
+                except Exception:
+                    pass
+
         # Load or generate persistent fingerprint
         fp = _load_or_generate_fingerprint(profile_path)
 
@@ -328,5 +342,8 @@ def create_driver():
         return driver
 
     except Exception as e:
+        import traceback
         logger.error(f"[Browser] Failed to launch Chrome: {e}")
+        logger.error(f"[Browser] Full traceback:\n{traceback.format_exc()}")
         return None
+
