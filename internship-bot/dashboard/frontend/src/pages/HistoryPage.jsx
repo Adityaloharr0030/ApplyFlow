@@ -28,156 +28,72 @@ function StatCard({ label, value, color = 'text-white' }) {
   );
 }
 
-const PAGE_SIZE = 20;
-
-export default function HistoryPage() {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [platformFilter, setPlatformFilter] = useState('All');
-  const [statusFilter, setStatusFilter] = useState('All');
-  const [page, setPage] = useState(1);
-
-  useEffect(() => {
-    fetch(`${API_BASE}/api/applications`)
-      .then(r => r.json())
-      .then(data => {
-        const raw = Array.isArray(data) ? data : (data.applications || []);
-        // Normalize CSV column names → standard keys
-        const normalized = raw.map(r => ({
-          date:      r.Date || r.date || r.timestamp || '',
-          title:     r.Role || r.title || '',
-          company:   r.Company || r.company || '',
-          platform:  (r.Source || r.platform || r.source || '').toLowerCase(),
-          status:    r.Status || r.status || '',
-          score:     r.Score || r.score || null,
-          apply_url: r['Apply URL'] || r.apply_url || r.url || '',
-          location:  r.Location || r.location || '',
-          cover:     r['Cover Note Preview'] || '',
-        }));
-        setRows(normalized);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, []);
-
-  const totalApplied = rows.filter(r => /applied|success/i.test(r.status || '')).length;
-  const totalSkipped = rows.filter(r => /skipped|dry run/i.test(r.status || '')).length;
-  const totalErrors  = rows.filter(r => /error|failed/i.test(r.status || '')).length;
-  const platforms    = ['All', ...new Set(rows.map(r => r.platform || '').filter(Boolean))];
-  const statuses     = ['All', 'Applied', 'Skipped', 'Error', 'Dry Run'];
-
-  const matchStatus = (rowStatus, filter) => {
-    if (filter === 'All') return true;
-    const s = rowStatus.toLowerCase();
-    if (filter === 'Applied') return /applied|success/.test(s);
-    if (filter === 'Skipped') return /skipped/.test(s);
-    if (filter === 'Error')   return /error|failed/.test(s);
-    if (filter === 'Dry Run') return /dry run/.test(s);
-    return s.includes(filter.toLowerCase());
-  };
-
-  const filtered = rows.filter(r => {
-    const plat    = (r.platform || '').toLowerCase();
-    const title   = (r.title || '').toLowerCase();
-    const company = (r.company || '').toLowerCase();
-    const s = search.toLowerCase();
-    return (platformFilter === 'All' || plat === platformFilter.toLowerCase())
-      && matchStatus(r.status || '', statusFilter)
-      && (!s || title.includes(s) || company.includes(s) || plat.includes(s));
-  });
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const paginated  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-
-  const handleExport = () => {
-    const headers = ['Date', 'Title', 'Company', 'Platform', 'Status', 'Score', 'URL'];
-    const csv = [headers, ...filtered.map(r => [
-      r.date || r.timestamp || '',
-      `"${(r.title || '').replace(/"/g, '""')}"`,
-      `"${(r.company || '').replace(/"/g, '""')}"`,
-      r.platform || r.source || '',
-      r.status || '',
-      r.score || '',
-      r.apply_url || r.url || '',
-    ])].map(row => row.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `applyflow_history_${new Date().toISOString().slice(0,10)}.csv`;
-    a.click();
-  };
-
+function RunPanel({ run, index, expanded, toggle }) {
+  const isExpanded = expanded;
+  const { date, stats, platforms, applications, duration_mins } = run;
+  
   return (
-    <div className="max-w-6xl pb-10">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-3xl font-bold text-white mb-1">Application History</h1>
-          <p className="text-slate-400 text-sm">Every application tracked across all runs.</p>
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden mb-4 shadow-sm">
+      {/* Header (Clickable) */}
+      <div 
+        onClick={toggle}
+        className="p-5 flex items-center justify-between cursor-pointer hover:bg-slate-800/50 transition-colors"
+      >
+        <div className="flex items-center gap-4">
+          <div className="bg-blue-900/30 text-blue-400 rounded-xl p-3">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white mb-1">
+              Run: {date}
+            </h2>
+            <div className="flex gap-3 text-sm text-slate-400">
+              <span>⏱ {duration_mins || 0} mins</span>
+              <span>•</span>
+              <span>🌐 {platforms.length > 0 ? platforms.join(', ') : 'No specific platform'}</span>
+            </div>
+          </div>
         </div>
-        <button onClick={handleExport}
-          className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-sm font-semibold px-4 py-2 rounded-xl transition-colors flex items-center gap-2">
-          ⬇ Export CSV
-        </button>
+        
+        {/* Quick Stats in Header */}
+        <div className="flex items-center gap-6 text-sm mr-4 hidden md:flex">
+          <div className="text-center">
+            <p className="text-slate-500 font-semibold mb-1">Processed</p>
+            <p className="text-white font-bold">{stats.total}</p>
+          </div>
+          <div className="text-center">
+            <p className="text-slate-500 font-semibold mb-1">Applied</p>
+            <p className="text-green-400 font-bold">{stats.applied}</p>
+          </div>
+          <div className="text-center">
+            <p className="text-slate-500 font-semibold mb-1">Skipped</p>
+            <p className="text-amber-400 font-bold">{stats.skipped}</p>
+          </div>
+          <div className="text-center">
+            <p className="text-slate-500 font-semibold mb-1">Avg Score</p>
+            <p className="text-blue-400 font-bold">{stats.avg_score || '—'}</p>
+          </div>
+        </div>
+        
+        <div className="text-slate-500 transform transition-transform duration-200" style={{ transform: isExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>
+          ▼
+        </div>
       </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-        <StatCard label="Total Tracked" value={rows.length}    color="text-white" />
-        <StatCard label="Applied"       value={totalApplied}   color="text-green-400" />
-        <StatCard label="Skipped"       value={totalSkipped}   color="text-amber-400" />
-        <StatCard label="Errors"        value={totalErrors}    color="text-red-400" />
-      </div>
-
-      {/* Filters */}
-      <div className="flex flex-wrap gap-3 mb-5">
-        <div className="relative flex-1 min-w-48">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">🔍</span>
-          <input type="text" placeholder="Search role or company…"
-            value={search}
-            onChange={e => { setSearch(e.target.value); setPage(1); }}
-            className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl pl-9 pr-4 py-2 text-sm focus:outline-none focus:border-blue-500 transition-colors"
-          />
-        </div>
-        <select value={platformFilter} onChange={e => { setPlatformFilter(e.target.value); setPage(1); }}
-          className="bg-slate-900 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-sm focus:outline-none">
-          {platforms.map(p => <option key={p} value={p}>{p === 'All' ? '📡 All Platforms' : p}</option>)}
-        </select>
-        <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
-          className="bg-slate-900 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-sm focus:outline-none">
-          {statuses.map(s => <option key={s} value={s}>{s === 'All' ? '🏷 All Statuses' : s}</option>)}
-        </select>
-        {(search || platformFilter !== 'All' || statusFilter !== 'All') && (
-          <button onClick={() => { setSearch(''); setPlatformFilter('All'); setStatusFilter('All'); setPage(1); }}
-            className="text-xs text-slate-500 hover:text-white transition-colors px-2">✕ Clear</button>
-        )}
-      </div>
-
-      {/* Table */}
-      {loading ? (
-        <div className="text-center py-20 text-slate-500">
-          <div className="text-4xl mb-3 animate-pulse">⏳</div>
-          <p>Loading history…</p>
-        </div>
-      ) : paginated.length === 0 ? (
-        <div className="text-center py-20 bg-slate-900 border border-slate-800 rounded-2xl">
-          <div className="text-5xl mb-4">{rows.length === 0 ? '📭' : '🔍'}</div>
-          <h3 className="text-white font-semibold mb-2">
-            {rows.length === 0 ? 'No applications tracked yet' : 'No results match your filters'}
-          </h3>
-          <p className="text-slate-400 text-sm max-w-sm mx-auto">
-            {rows.length === 0 ? 'Run the bot to start tracking. All applications appear here automatically.'
-              : 'Try adjusting your search or filter.'}
-          </p>
-        </div>
-      ) : (
-        <>
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+      
+      {/* Applications Table */}
+      {isExpanded && (
+        <div className="border-t border-slate-800">
+          {applications.length === 0 ? (
+            <div className="p-8 text-center text-slate-500">
+              No applications tracked during this run.
+            </div>
+          ) : (
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-slate-800 text-slate-500 text-xs uppercase tracking-wider">
-                  <th className="text-left px-5 py-3 font-semibold">Date</th>
-                  <th className="text-left px-5 py-3 font-semibold">Role / Company</th>
+                <tr className="bg-slate-900/50 text-slate-500 text-xs uppercase tracking-wider">
+                  <th className="text-left px-5 py-3 font-semibold pl-16">Role / Company</th>
                   <th className="text-left px-5 py-3 font-semibold">Platform</th>
                   <th className="text-left px-5 py-3 font-semibold">Status</th>
                   <th className="text-left px-5 py-3 font-semibold">Score</th>
@@ -185,7 +101,7 @@ export default function HistoryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
-                {paginated.map((row, i) => {
+                {applications.map((row, i) => {
                   const plat  = (row.platform || 'unknown').toLowerCase();
                   const status = row.status || 'Unknown';
                   const platStyle = PLATFORM_COLORS[plat] || PLATFORM_COLORS.generic_web;
@@ -194,14 +110,10 @@ export default function HistoryPage() {
                     : /skipped/i.test(status) ? 'Skipped'
                     : /dry run/i.test(status) ? 'Dry Run' : '';
                   const statusStyle = STATUS_STYLES[statusKey] || 'bg-slate-800 text-slate-400 border-slate-700';
-                  const rawDate = row.date || row.timestamp;
-                  const date = rawDate
-                    ? new Date(rawDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })
-                    : '—';
+                  
                   return (
                     <tr key={i} className="hover:bg-slate-800/30 transition-colors">
-                      <td className="px-5 py-3 text-slate-500 whitespace-nowrap text-xs">{date}</td>
-                      <td className="px-5 py-3">
+                      <td className="px-5 py-3 pl-16">
                         <p className="text-white font-medium truncate max-w-xs">{row.title || '—'}</p>
                         <p className="text-slate-500 text-xs">{row.company || '—'}</p>
                       </td>
@@ -210,10 +122,10 @@ export default function HistoryPage() {
                           {plat}
                         </span>
                       </td>
-                      <td className="px-5 py-3 max-w-[160px]">
+                      <td className="px-5 py-3 max-w-[200px]">
                         <span className={`text-xs font-semibold px-2 py-0.5 rounded border block truncate ${statusStyle}`}
                           title={status}>
-                          {status.length > 24 ? status.slice(0, 24) + '…' : status}
+                          {status}
                         </span>
                       </td>
                       <td className="px-5 py-3">
@@ -234,25 +146,128 @@ export default function HistoryPage() {
                 })}
               </tbody>
             </table>
-          </div>
-          {/* Pagination */}
-          <div className="flex items-center justify-between mt-4 text-sm text-slate-500">
-            <span>
-              Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}
-            </span>
-            <div className="flex gap-2">
-              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
-                className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg disabled:opacity-40 hover:bg-slate-700 transition-colors">
-                ← Prev
-              </button>
-              <span className="px-3 py-1.5 text-slate-400 font-medium">{page} / {totalPages}</span>
-              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
-                className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg disabled:opacity-40 hover:bg-slate-700 transition-colors">
-                Next →
-              </button>
-            </div>
-          </div>
-        </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function HistoryPage() {
+  const [runs, setRuns] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedRuns, setExpandedRuns] = useState({});
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/runs`)
+      .then(r => r.json())
+      .then(data => {
+        const raw = Array.isArray(data.runs) ? data.runs : [];
+        setRuns(raw);
+        
+        // Auto-expand the most recent run
+        if (raw.length > 0) {
+          setExpandedRuns({ 0: true });
+        }
+        
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const toggleRun = (index) => {
+    setExpandedRuns(prev => ({
+      ...prev,
+      [index]: !prev[index]
+    }));
+  };
+
+  const handleExport = () => {
+    const headers = ['Run Date', 'Title', 'Company', 'Platform', 'Status', 'Score', 'URL'];
+    const rows = [];
+    runs.forEach(run => {
+      run.applications.forEach(r => {
+        rows.push([
+          run.date,
+          `"${(r.title || '').replace(/"/g, '""')}"`,
+          `"${(r.company || '').replace(/"/g, '""')}"`,
+          r.platform || r.source || '',
+          r.status || '',
+          r.score || '',
+          r.apply_url || r.url || '',
+        ].join(','));
+      });
+    });
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `applyflow_history_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+  };
+  
+  // Calculate globals
+  let globalTotal = 0;
+  let globalApplied = 0;
+  let globalSkipped = 0;
+  let globalErrors = 0;
+  
+  runs.forEach(r => {
+    globalTotal += r.stats.total;
+    globalApplied += r.stats.applied;
+    globalSkipped += r.stats.skipped;
+    globalErrors += r.stats.errors;
+  });
+
+  return (
+    <div className="max-w-6xl pb-10">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-3xl font-bold text-white mb-1">Application History</h1>
+          <p className="text-slate-400 text-sm">Every application tracked, grouped by bot run.</p>
+        </div>
+        <button onClick={handleExport}
+          className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-sm font-semibold px-4 py-2 rounded-xl transition-colors flex items-center gap-2">
+          ⬇ Export CSV
+        </button>
+      </div>
+
+      {/* Global Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <StatCard label="Total Processed" value={globalTotal}    color="text-white" />
+        <StatCard label="Successfully Applied" value={globalApplied}  color="text-green-400" />
+        <StatCard label="Skipped"       value={globalSkipped}  color="text-amber-400" />
+        <StatCard label="Errors / Failed" value={globalErrors}   color="text-red-400" />
+      </div>
+
+      {/* Runs List */}
+      {loading ? (
+        <div className="text-center py-20 text-slate-500">
+          <div className="text-4xl mb-3 animate-pulse">⏳</div>
+          <p>Loading run history…</p>
+        </div>
+      ) : runs.length === 0 ? (
+        <div className="text-center py-20 bg-slate-900 border border-slate-800 rounded-2xl">
+          <div className="text-5xl mb-4">📭</div>
+          <h3 className="text-white font-semibold mb-2">
+            No runs tracked yet
+          </h3>
+          <p className="text-slate-400 text-sm max-w-sm mx-auto">
+            Launch the bot to start tracking. Your application history will appear here.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {runs.map((run, i) => (
+            <RunPanel 
+              key={i} 
+              run={run} 
+              index={i} 
+              expanded={!!expandedRuns[i]} 
+              toggle={() => toggleRun(i)} 
+            />
+          ))}
+        </div>
       )}
     </div>
   );

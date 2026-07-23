@@ -474,6 +474,84 @@ def get_applications(session: Session = Depends(get_session), user: User = Depen
         "applications": [l.model_dump() for l in logs]
     }
 
+@app.get("/api/runs")
+def get_runs(session: Session = Depends(get_session), user: User = Depends(get_current_user)):
+    logs = session.exec(select(ApplicationLog).where(ApplicationLog.user_id == user.id).order_by(ApplicationLog.id.desc())).all()
+    
+    if not logs:
+        return {"runs": []}
+    
+    # Group by run date (YYYY-MM-DD)
+    runs_dict = {}
+    for log in logs:
+        day = log.applied_at[:10]
+        if not day: continue
+        
+        if day not in runs_dict:
+            runs_dict[day] = {
+                "date": day,
+                "started_at": log.applied_at,
+                "ended_at": log.applied_at,
+                "stats": {
+                    "total": 0,
+                    "applied": 0,
+                    "skipped": 0,
+                    "errors": 0,
+                    "manual": 0,
+                    "avg_score": 0.0,
+                },
+                "platforms": set(),
+                "applications": [],
+                "_scores": []
+            }
+            
+        group = runs_dict[day]
+        
+        # Avoid recursive / huge dumps, just need UI fields
+        dump = log.model_dump()
+        group["applications"].append(dump)
+        if log.platform:
+            group["platforms"].add(log.platform)
+        
+        status = (log.status or "").lower()
+        if status in ("success", "applied"):
+            group["stats"]["applied"] += 1
+        elif status in ("error", "failed"):
+            group["stats"]["errors"] += 1
+            
+        if log.dry_run:
+            group["stats"]["skipped"] += 1
+            
+        group["stats"]["total"] += 1
+        
+        if log.score:
+            group["_scores"].append(log.score)
+            
+        if log.applied_at < group["started_at"]:
+            group["started_at"] = log.applied_at
+        if log.applied_at > group["ended_at"]:
+            group["ended_at"] = log.applied_at
+
+    runs_list = []
+    for day, group in runs_dict.items():
+        group["platforms"] = list(group["platforms"])
+        if group["_scores"]:
+            group["stats"]["avg_score"] = round(sum(group["_scores"]) / len(group["_scores"]), 1)
+        del group["_scores"]
+        
+        try:
+            import datetime as dt
+            start_dt = dt.datetime.fromisoformat(group["started_at"])
+            end_dt = dt.datetime.fromisoformat(group["ended_at"])
+            group["duration_mins"] = int((end_dt - start_dt).total_seconds() / 60)
+        except Exception:
+            group["duration_mins"] = 0
+            
+        runs_list.append(group)
+        
+    runs_list.sort(key=lambda r: r["date"], reverse=True)
+    return {"runs": runs_list, "total_runs": len(runs_list)}
+
 @app.get("/api/history")
 def get_history(
     page: int = Query(1, ge=1),
@@ -558,6 +636,19 @@ async def parse_resume(file: UploadFile = File(...), user: User = Depends(get_cu
     
     try:
         pdf_bytes = await file.read()
+        
+        # Save the uploaded resume to disk as the global resume.pdf
+        data_dir = BASE_DIR / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        file_path = data_dir / "resume.pdf"
+        with open(file_path, "wb") as f:
+            f.write(pdf_bytes)
+            
+        # Delete the old cache so resume_brain.py reparses it on next run
+        cache_file = data_dir / "resume_cache.json"
+        if cache_file.exists():
+            cache_file.unlink()
+            
         pdf_reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
         text = ""
         for page in pdf_reader.pages:
@@ -606,6 +697,10 @@ async def parse_resume(file: UploadFile = File(...), user: User = Depends(get_cu
                 response = response[:-3]
                 
             data = json.loads(response)
+            
+            # Attach the saved file path
+            data["resume_path"] = str(file_path.absolute().as_posix())
+            
             return {"status": "success", "data": data}
         
         raise HTTPException(status_code=500, detail="Failed to get AI response")

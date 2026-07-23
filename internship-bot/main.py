@@ -83,37 +83,50 @@ def setup_logging() -> logging.Logger:
     logger.info(f"Logging to: {log_file}")
     return logger
 
-def load_profile() -> dict:
-    """Load and validate profile.json via Pydantic. Returns a plain dict for
-    backward compatibility, but validation ensures no silent KeyErrors."""
-    if not PROFILE_PATH.exists():
-        print(f"❌ Profile not found: {PROFILE_PATH}")
-        sys.exit(1)
-
-    with open(PROFILE_PATH, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-
-    # Validate through Pydantic — raises ValidationError with clear messages
+def load_settings_from_db():
     try:
-        validated = profile_from_dict(raw)
+        from sqlmodel import Session, select
+        from core.db import engine, init_db
+        from core.models import UserSettings
+        
+        init_db()
+        with Session(engine) as session:
+            settings = session.exec(select(UserSettings)).all()
+            for s in settings:
+                os.environ[s.key] = str(s.value)
     except Exception as e:
-        logging.getLogger("main").warning(f"⚠️  profile.json validation warning: {e}")
-        validated = None
+        logging.getLogger("main").warning(f"⚠️ Failed to load settings from DB: {e}")
 
-    profile = validated.model_dump(mode="python") if validated else raw
+def load_profile() -> dict:
+    """Load and validate profile from the PostgreSQL database."""
+    from sqlmodel import Session, select
+    from core.db import engine
+    from core.models import UserProfile
+    
+    _log = logging.getLogger("main")
+    
+    try:
+        with Session(engine) as session:
+            db_profile = session.exec(select(UserProfile)).first()
+            if not db_profile:
+                _log.warning("⚠️ No profile found in database! Falling back to empty profile.")
+                return {}
+            profile = db_profile.model_dump(mode="python")
+    except Exception as e:
+        _log.warning(f"⚠️ Failed to load profile from DB: {e}")
+        return {}
 
     # Runtime warnings
-    _log = logging.getLogger("main")
     resume_path = profile.get("resume_path", "")
     if resume_path:
         if not Path(resume_path).exists():
             _log.warning(f"⚠️  resume_path '{resume_path}' does not exist! Resume uploads will fail.")
     else:
-        _log.warning("⚠️  No resume_path set in profile.json — resume uploads will fail.")
+        _log.warning("⚠️  No resume_path set in database — resume uploads will fail.")
 
     email = profile.get("email", "")
     if email in ("youremail@example.com", ""):
-        _log.warning("⚠️  Email in profile.json is placeholder or empty! Logins may fail.")
+        _log.warning("⚠️  Email in profile is placeholder or empty! Logins may fail.")
 
     return profile
 
@@ -422,6 +435,7 @@ def main():
         os.environ["DRY_RUN"] = "true"
 
     logger = setup_logging()
+    load_settings_from_db()
     validate_env(logger)
     check_browser_profile(logger)
 
